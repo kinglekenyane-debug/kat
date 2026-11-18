@@ -1,0 +1,29 @@
+{
+ "name": "KAT · Keeping Attendance Today",
+ "short_name": "KAT",
+ "start_url": "./",
+ "scope": "./",
+ "display": "standalone",
+ "background_color": "#12329A",
+ "theme_color": "#12329A",
+ "description": "Attendance registers for Ficksburg High School",
+ "icons": [
+  {
+   "src": "icons/icon-192.png",
+   "sizes": "192x192",
+   "type": "image/png",
+   "purpose": "any maskable"
+  },
+  {
+   "src": "icons/icon-512.png",
+   "sizes": "512x512",
+   "type": "image/png",
+   "purpose": "any maskable"
+  },
+  {
+   "src": "icons/icon.svg",
+   "sizes": "any",
+   "type": "image/svg+xml"
+  }
+ ]
+}

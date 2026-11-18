@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 100 100" role="img" aria-label="Concept A: cat face with a tick" xmlns:c2pa="http://c2pa.org/manifest">
+        <rect width="100" height="100" rx="22" fill="#12329A"></rect>
+        <path d="M22 42 L25 15 L42 29 Q50 26 58 29 L75 15 L78 42 Q85 54 78 66 Q68 82 50 82 Q32 82 22 66 Q15 54 22 42 Z" fill="#F2C024"></path>
+        <path d="M30 21 L39 29 L31 32 Z" fill="#C8102E"></path>
+        <path d="M70 21 L61 29 L69 32 Z" fill="#C8102E"></path>
+        <path d="M34 56 L45 67 L67 43" fill="none" stroke="#12329A" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
