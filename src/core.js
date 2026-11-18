@@ -105,6 +105,15 @@ function symbolGuess(name) {
   const sur = firstIsInitial ? w[w.length - 1] : w[0], first = firstIsInitial ? w[0] : w[1] || '';
   return (sur[0] + (first[0] || '')).toUpperCase();
 }
+// symbols must be unique so sign-in finds one person: on a clash, use two surname letters (Mahase P = MAP), then a number
+function uniqueSymbols(db) {
+  const used = new Set(); const order = db.staff.slice().sort((a, b) => (a.role === 'teacher' ? 0 : 1) - (b.role === 'teacher' ? 0 : 1));
+  order.forEach((x) => {
+    let c = (x.code || symbolGuess(x.name)).toUpperCase();
+    if (used.has(c)) { const g = symbolGuess(x.name); const w = (x.name || '').replace(/^(MR|MRS|MS|DR|MISS)\.?\s+/i, '').replace(/[^A-Za-z ]/g, ' ').split(/\s+/).filter(Boolean); const sur = w.find((q) => q.length > 1 && q[0] === g[0]) || ''; const alt = (sur.slice(0, 2) + g.slice(1)).toUpperCase(); c = used.has(alt) ? c : alt; let n = 2; while (used.has(c)) c = g + n++; }
+    x.code = c; used.add(c);
+  });
+}
 const FICKS_TEACHERS = ['Ms N. Radebe', 'Mr S. Khumalo', 'Mrs L. Sithole', 'Mr T. Mofokeng', 'Ms R. Ndlovu', 'Mr K. Molefe', 'Mrs Z. Mahlangu', 'Ms L. Els', 'Mr B. Zulu', 'Ms A. Dlamini', 'Mrs M. Motaung', 'Ms K. Tau', 'KING', 'Mr J. Letsie', 'Mrs P. Mabena', 'Mr L. Shabalala', 'Ms P. Nhlapo', 'Mrs T. Nkosi', 'Mr S. Phiri', 'Ms D. Mokoena', 'Mrs B. Ramoeletsi', 'Mr N. Radebe', 'Ms L. Khumalo', 'Mr M. Sithole', 'Mrs D. Moloi'];
 
 /* ---- sample data ---- */
@@ -302,6 +311,8 @@ class Store {
     const school = SCHOOLS.find((s) => s.id === id); if (!school) return;
     let db = LS.get(this.key(id)) || MEM[id];
     if (!db || db.v !== DATA_VERSION) { db = generateSample(school, todayISO()); }
+    // every staff member needs a symbol to sign in (older data and the office/principal samples had none)
+    uniqueSymbols(db);
     this.db = db; this.persist();
   }
   persist() { if (!this.db) return; if (!LS.set(this.key(this.db.schoolId), this.db)) MEM[this.db.schoolId] = this.db; }
