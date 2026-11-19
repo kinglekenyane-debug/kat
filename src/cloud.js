@@ -46,11 +46,21 @@ class Cloud {
       if (pw !== pw2) return { err: 'The two new passwords are not the same.' };
       const ok = await this.sb.rpc('check_start', { p_school: school, p_code: code, p_start: start });
       if (ok.error) return { err: ok.error.message }; if (!ok.data) return { err: 'wrong-start' };
-      await this.sb.auth.signOut().catch(() => {});
-      const { data, error } = await this.sb.auth.signUp({ email: this.email(school, code), password: pw });
+      // an old login on this phone (for example from before a restart) must not get in the way
+      await this.sb.auth.signOut({ scope: 'local' }).catch(() => {});
+      let { data, error } = await this.sb.auth.signUp({ email: this.email(school, code), password: pw });
+      // a first try that stopped half-way already made the login with this password: carry on with it
+      if (error && /already registered/i.test(error.message)) ({ data, error } = await this.sb.auth.signInWithPassword({ email: this.email(school, code), password: pw }));
+      if (error && /invalid/i.test(error.message)) return { err: 'An earlier first sign-in for ' + code + ' stopped half-way with a different password. Ask the admin to give you a new starting password.' };
       if (error || !data.session) return { err: (error && error.message) || 'Could not create the login.' };
       this.user = data.user;
-      const c = await this.sb.rpc('claim_symbol', { p_school: school, p_code: code, p_start: start });
+      let c;
+      for (let i = 0; i < 3; i++) {
+        await this.sb.auth.setSession({ access_token: data.session.access_token, refresh_token: data.session.refresh_token }).catch(() => {});
+        c = await this.sb.rpc('claim_symbol', { p_school: school, p_code: code, p_start: start });
+        if (!c.error || !/not signed in/i.test(c.error.message)) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
       if (c.error) return { err: c.error.message };
     }
     this.dev = false;
@@ -70,7 +80,7 @@ class Cloud {
       if (!pw2) return { first: true };
       if (pw.length < 8) return { err: 'The developer password needs at least 8 characters.' };
       if (pw !== pw2) return { err: 'The two passwords are not the same.' };
-      await this.sb.auth.signOut().catch(() => {});
+      await this.sb.auth.signOut({ scope: 'local' }).catch(() => {});
       const { data, error } = await this.sb.auth.signUp({ email: this.devEmail(), password: pw });
       if (error || !data.session) return { err: (error && error.message) || 'Could not create the login.' };
       this.user = data.user;
@@ -106,7 +116,7 @@ class Cloud {
   // admin: give a staff member a starting password (also ends their old login)
   async setStart(code, pw) { const r = await this.sb.rpc('set_start_password', { p_school: this.member.school_id, p_code: String(code).toUpperCase(), p_pw: pw }); return r.error ? r.error.message : null; }
   canAdmin() { const me = this.store.me; return !!me && ['admin', 'principal'].includes(staffGroup(me)); }
-  async signOut() { this.stop(); this.user = null; this.member = null; this.dev = false; await this.sb.auth.signOut().catch(() => {}); }
+  async signOut() { this.stop(); this.user = null; this.member = null; this.dev = false; await this.sb.auth.signOut({ scope: 'local' }).catch(() => {}); }
   async changePassword(pw) { const { error } = await this.sb.auth.updateUser({ password: pw }); return error ? error.message : null; }
 
   async start() {
