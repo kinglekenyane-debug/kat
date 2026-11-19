@@ -112,6 +112,7 @@ class Cloud {
     this.chan = this.sb.channel('school-' + school).on('postgres_changes', { event: '*', schema: 'public', table: 'docs', filter: 'school_id=eq.' + school }, (p) => {
       const r = p.eventType === 'DELETE' ? p.old : p.new; if (!r || !r.coll) return;
       const key = r.coll + '\u0001' + r.id, db = s.db;
+      if (!db || db.schoolId !== school) return;
       if (p.eventType === 'DELETE') {
         delete this.last[key];
         if (CLOUD_MAPS.includes(r.coll)) delete db[r.coll][r.id];
@@ -134,6 +135,7 @@ class Cloud {
   async push(force) {
     const s = this.store; if ((!this.ready && !force) || !s.db || !this.member) return;
     if (s.offline) { if (s.pending()) this.hadWaiting = true; return; }
+    if (s.db.schoolId !== this.member.school_id) return; // this phone is looking at another school: never mix the two
     if (this.busy) { this.again = true; return; }
     this.busy = true;
     try {
