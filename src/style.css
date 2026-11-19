@@ -287,3 +287,5 @@ details summary { cursor: pointer; }
 .pbar { display: inline-block; width: 70px; height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; vertical-align: middle; }
 .pbar i { display: block; height: 100%; border-radius: 4px; }
 .pcell { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.signin-line { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--ok-bg, #e8f5ec); border-radius: 12px; font-size: 14px; }
+.signin-card { border-left: 4px solid var(--accent); }

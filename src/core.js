@@ -1,5 +1,5 @@
 /* ===== KAT core: school configuration, dates, sample data and the data store ===== */
-const TENG_VERSION = '0.8 test';
+const TENG_VERSION = '0.9 test';
 const DATA_VERSION = 7;
 
 /* ---- Schools. Each school has its own data space, name, crest and colours. ---- */
@@ -281,6 +281,15 @@ function generateSample(school, today) {
     const items = lo.map((acc, i) => ({ acc, no: 'LO:' + pad(100 + i * 3 % 60).padStart(3, '0'), signed: '2026-01-' + pad(20 + (i % 3)), t2: 'Y', t3: i === 6 || i === 17 ? 'M' : (i === 25 ? null : 'Y'), returned: null }));
     db.books.push({ id: 'b-lo10', subject: 'Life Orientation', grade: 10, groupId: 'g-lo10', teacherId: 'king', year: 2026, title: 'Life Orientation Grade 10 (Focus)', items });
   }
+  // staff sign-in history: most staff arrive between 06:45 and 07:20; today some have not signed in yet
+  const sr = rng(4242); db.changes = db.changes || {};
+  prevSchoolDays(school, today, 20).forEach((d) => db.staff.forEach((p) => {
+    if (p.id === 'king') return;
+    const k = p.id + '|' + d; const ch = db.changes[k] || {}; if (ch.absent) return;
+    const x = sr(); if (d === today && x < 0.04) { db.changes[k] = Object.assign(ch, { absent: true }); return; }
+    if (d === today && x > 0.8) return;
+    ch.signin = addMin('06:45', Math.floor(sr() * (x > 0.93 ? 55 : 33))); db.changes[k] = ch;
+  }));
   return db;
 }
 function regKey(kind, ref, date, period) { return kind + '|' + ref + '|' + date + '|' + (period || 0); }
@@ -539,7 +548,7 @@ function schoolTimes(school) {
   const t = school.times || {}; const a = school.assembly || '07:30';
   const days = {}; [1, 2, 3, 4, 5].forEach((d) => { days[d] = Object.assign({ held: true, start: a, due: addMin(a, 20), chase: addMin(a, 45) }, (t.days || {})[d] || {}); });
   const signoff = Object.assign({ teacher: { d: 5, t: '12:00' }, smt: { d: 5, t: '14:00' }, principal: { d: 1, t: '10:00' } }, t.signoff || {});
-  return { days, signoff, by: t.by || null, at: t.at || null };
+  return { days, signoff, staffIn: t.staffIn || '07:15', by: t.by || null, at: t.at || null };
 }
 function addMin(hm, m) { const [h, mi] = hm.split(':').map(Number); const x = h * 60 + mi + m; return pad(Math.floor(x / 60)) + ':' + pad(x % 60); }
 function signoffDue(school, me, date) {

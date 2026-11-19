@@ -255,6 +255,7 @@ function Home({ nav }) {
     </div></header>
     <${NetBar} />
     <main class="col gut content home-main">
+      <${StaffSignIn} />
       ${cls ? html`<section class="card">
         <div class="between"><span class="eyebrow">Morning register</span>${pill}</div>
         <div class="row" style="align-items:baseline;gap:8px"><span style="font-size:28px;font-weight:700">${cls}</span><span class="small muted">${classLearners(db, cls).length} learners · ${tday ? (tday.held ? 'Assembly ' + tday.start + ' · due by ' + tday.due : 'No assembly today: take it in class at P1') : 'Assembly ' + s.assembly}</span></div>
@@ -762,6 +763,7 @@ function Office({ nav }) {
   const openTile = open && all.find((x) => x.c.id === open);
   return html`<div class="app"><${WideBand} nav=${nav} noBack=${app.me.role === 'office'} title=${'KAT · Attendance office'} sub=${fmtLong(date) + ' · Morning register'} />
     <main class="wide gut content">
+      ${app.me.role === 'office' && html`<${StaffSignIn} undo=${true} />`}
       <div class="between"><label class="f" for="od" style="flex-direction:row;align-items:center;gap:10px">Day<input id="od" type="date" class="inp" style="width:auto" value=${date} onInput=${(e) => e.target.value && setDate(e.target.value)} /></label><div class="row" style="gap:8px;flex-wrap:wrap">${!isSchoolDay(s, date) && html`<span class="pill grey">${s.noSchool && s.noSchool[date] ? 'No school: ' + s.noSchool[date] : 'Not a school day'}</span>`}
         ${s.noSchool && s.noSchool[date] ? html`<button class="btn sm line" onClick=${() => { app.setNoSchool(date, null); app.toast(fmtShort(date) + ' is a school day again.'); }}>Undo no school</button>` : isSchoolDay(s, date) && html`<button class="btn sm line" onClick=${() => setNs('')}>Mark as no school day</button>`}</div></div>
       ${ns !== null && html`<section class="card"><span class="eyebrow">No school on ${fmtLong(date)}</span><span class="small muted">No registers are expected, nothing counts as missed, and the monthly register shades the day.</span>
@@ -971,7 +973,8 @@ function Times({ nav }) {
   const [days, setDays] = useState(() => JSON.parse(JSON.stringify(cur.days))), [so, setSo] = useState(() => JSON.parse(JSON.stringify(cur.signoff)));
   const setDay = (d, k, v) => { const n = Object.assign({}, days); n[d] = Object.assign({}, n[d], { [k]: v }); setDays(n); };
   const setSoK = (r, k, v) => { const n = Object.assign({}, so); n[r] = Object.assign({}, n[r], { [k]: v }); setSo(n); };
-  const save = () => { app.updateSettings({ times: { days, signoff: so, by: app.me.id, at: stamp() }, assembly: days[1].start }); app.toast('Times saved for everyone at ' + s.short + '.'); };
+  const [staffIn, setStaffIn] = useState(cur.staffIn);
+  const save = () => { app.updateSettings({ times: { days, signoff: so, staffIn, by: app.me.id, at: stamp() }, assembly: days[1].start }); app.toast('Times saved for everyone at ' + s.short + '.'); };
   return html`<div class="app"><${WideBand} nav=${nav} title="Assembly and sign-off times" sub=${s.name + ' · set by the office'} />
     <main class="wide gut content" style="max-width:900px">
       <section class="card"><span class="eyebrow">Morning register, per day</span>
@@ -979,6 +982,9 @@ function Times({ nav }) {
         ${[1, 2, 3, 4, 5].map((d) => html`<div style="border-top:1px solid var(--line-soft);padding-top:10px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center"><b style="min-width:96px">${DOW_LONG[d]}</b>
           <label class="check" style="margin:0"><input type="checkbox" checked=${days[d].held} onChange=${(e) => setDay(d, 'held', e.target.checked)} /><span>${days[d].held ? 'Assembly' : 'No assembly (class at P1)'}</span></label>
           ${[['start', 'Starts'], ['due', 'Due by'], ['chase', 'Chase from']].map(([k, l]) => (k === 'start' && !days[d].held ? null : html`<label class="f" style="flex-direction:row;align-items:center;gap:6px;font-size:13px">${l}<input type="time" class="inp" style="width:auto;min-height:38px" value=${days[d][k]} onInput=${(e) => setDay(d, k, e.target.value)} /></label>`))}</div>`)}</section>
+      <section class="card"><span class="eyebrow">Staff sign-in</span>
+        <label class="f" for="tsi" style="flex-direction:row;align-items:center;gap:10px">Staff sign in by<input id="tsi" type="time" class="inp" style="width:auto" value=${staffIn} onInput=${(e) => setStaffIn(e.target.value)} /></label>
+        <span class="small muted">Staff who sign in after this time show as late on the principal's page and the staff register.</span></section>
       <section class="card"><span class="eyebrow">Weekly sign-off</span>
         <span class="small muted">Each person gets a reminder in KAT from this day and time.</span>
         ${[['teacher', 'Class teacher', 'this week'], ['smt', 'SMT', 'this week'], ['principal', 'Principal', 'the previous week']].map(([r, l, w]) => html`<div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><b style="min-width:120px">${l}</b>
@@ -1132,7 +1138,7 @@ function Timetable({ nav, mode }) {
 }
 
 /* ================= router ================= */
-const SCREENS = { home: Home, register: Register, cover: Cover, period: Period, reasons: Reasons, upload: Upload, incidents: Incidents, 'incident-new': IncidentNew, books: Books, 'book-new': BookNew, book: Book, find: Find, learner: Learner, print: PrintLists, office: Office, capture: Capture, records: Records, admin: AdminHub, principal: PrincipalHome, schoolset: Admin, staff: Staff, learners: Learners, classes: Classes, yearend: YearEnd, settings: Settings, timetable: Timetable, missed: Missed, times: Times };
+const SCREENS = { home: Home, register: Register, cover: Cover, period: Period, reasons: Reasons, upload: Upload, incidents: Incidents, 'incident-new': IncidentNew, books: Books, 'book-new': BookNew, book: Book, find: Find, learner: Learner, print: PrintLists, office: Office, capture: Capture, records: Records, admin: AdminHub, principal: PrincipalHome, staffreg: StaffRegister, schoolset: Admin, staff: Staff, learners: Learners, classes: Classes, yearend: YearEnd, settings: Settings, timetable: Timetable, missed: Missed, times: Times };
 function Root() {
   const [, force] = useState(0);
   useEffect(() => app.subscribe(() => force((x) => x + 1)), []);
