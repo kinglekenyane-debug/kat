@@ -59,14 +59,15 @@ function printedLine(app, school) { return 'Printed ' + fmtDMY(todayISO()) + ' '
 
 function morningRegisterModel(app, cls, y, m) {
   const db = app.db, school = app.school, N = daysInMonth(y, m), today = todayISO();
-  const accs = classLearners(db, cls); const c = db.classes.find((x) => x.id === cls);
   const days = []; for (let d = 1; d <= N; d++) days.push(y + '-' + pad(m + 1) + '-' + pad(d));
+  // learners who left during or after this month stay on it, with their archive date
+  const accs = classLearners(db, cls).concat(sortAcc(db, Object.keys(db.learners).filter((a) => { const l = db.learners[a]; return l.archiveDate && (l.lastCls || l.cls) === cls && l.archiveDate >= days[0]; }))); const c = db.classes.find((x) => x.id === cls);
   const head = ['#', 'Accession No', 'Learner Name', 'Date of Birth', 'Date of Registration', 'Date of Archive', 'Gender'].concat(days.map((d) => parse(d).getDate() + '\n' + DOW[dow(d)].charAt(0)), ['Total']);
   const rowsAll = accs.map((acc, i) => {
     const l = db.learners[acc]; let tot = 0;
     const cells = days.map((d) => {
       if (!isSchoolDay(school, d)) return { t: '', cls: 'sh' };
-      if (d > today) return '';
+      if (d > today || (l.archiveDate && d > l.archiveDate)) return '';
       const mm = morningMark(db, acc, d); if (mm === 'P' || mm === 'L') tot++; return markCell(mm);
     });
     return [String(i + 1), acc, { t: learnerName(l), align: 'l' }, fmtDMY(l.dob), fmtDMY(l.regDate), fmtDMY(l.archiveDate), l.gender].concat(cells, [String(tot)]);

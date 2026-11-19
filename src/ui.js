@@ -83,8 +83,8 @@ function BottomNav({ nav, cur }) {
   const role = app.me.role;
   const items = role === 'teacher'
     ? [['home', 'Home', 'home'], ['register', 'Register', 'check'], ['incidents', 'Incidents', 'warn'], ['books', 'Books', 'book']]
-    : role === 'office' ? [['office', 'Today', 'grid'], ['capture', 'SA-SAMS', 'inbox'], ['records', 'Records', 'search'], ['settings', 'More', 'gear']]
-      : [['office', 'Today', 'grid'], ['records', 'Records', 'search'], ['admin', 'School', 'gear'], ['settings', 'More', 'user']];
+    : role === 'office' ? [['office', 'Today', 'grid'], ['capture', 'SA-SAMS', 'inbox'], ['records', 'Records', 'search'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']]
+      : [['office', 'Today', 'grid'], ['records', 'Records', 'search'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']];
   return html`<nav class="bnav" aria-label="Main"><div class=${'bnav-in ' + (role === 'teacher' ? 'col' : 'wide')}>${items.map(([r, label, ic]) => html`<button aria-current=${cur === r ? 'page' : null} onClick=${() => { if (r === 'register') { const c = app.me.registerClass; c ? nav.reset('register', { cls: c }) : nav.reset('cover'); } else nav.reset(r); }}><${Icon} n=${ic} />${label}</button>`)}</div></nav>`;
 }
 
@@ -103,7 +103,7 @@ function Welcome() {
   const db = app.db, s = app.school;
   const [who, setWho] = useState(null), [sym, setSym] = useState(''), [pw, setPw] = useState(''), [pw2, setPw2] = useState(''), [err, setErr] = useState(''), [tries, setTries] = useState(0), [waitTill, setWaitTill] = useState(0), [keep, setKeep] = useState(true);
   const findSym = (v) => db.staff.find((x) => (x.code || '').toUpperCase() === v.trim().toUpperCase());
-  const [cst, setCst] = useState(null), [busy, setBusy] = useState(false);
+  const [cst, setCst] = useState(null), [busy, setBusy] = useState(false), [startPw, setStartPw] = useState('');
   useEffect(() => {
     setCst(null); if (!onCloud() || sym.trim().length < 2) return;
     let live = true; const t = setTimeout(() => { app.cloud.status(sid, sym).then((v) => { if (live) setCst(v); }).catch(() => {}); }, 300);
@@ -131,12 +131,13 @@ function Welcome() {
     if (x1 && staffGroup(x1) !== grp) { setErr(x1.name + ' signs in as ' + ROLE_GROUPS.find((r) => r[0] === staffGroup(x1))[1] + '. Go back and choose that.'); return; }
     if (!sym.trim()) { setErr('Type your symbol.'); return; }
     if (!pw) { setErr('Type your password.'); return; }
-    const first = cst === 'free' || cst === 'new-school';
-    if (first) { if (pw.length < 6) { setErr('Choose a password of at least 6 characters.'); return; } if (pw !== pw2) { setErr('The two passwords are not the same.'); return; } }
+    const first = cst === 'invited';
+    if (first) { if (!startPw) { setErr('Type the starting password the admin gave you.'); return; } if (pw.length < 6) { setErr('Choose a password of at least 6 characters.'); return; } if (pw !== pw2) { setErr('The two new passwords are not the same.'); return; } }
     setBusy(true); setErr('');
-    const r = await app.cloud.signIn(sid, sym, pw, first ? pw2 : null);
+    const r = await app.cloud.signIn(sid, sym, pw, first ? startPw : null, pw2);
     setBusy(false);
-    if (r.first) { setCst('free'); setErr('First time: choose a password and type it twice.'); return; }
+    if (r.first) { setCst('invited'); setErr('First time: type the starting password from the admin, then choose your own.'); return; }
+    if (r.err === 'wrong-start') { const t = tries + 1; setTries(t); if (t >= 5) { setWaitTill(Date.now() + 30000); setTries(0); } setErr('That starting password is wrong. Check it with the admin.'); return; }
     if (r.err === 'wrong') { const t = tries + 1; setTries(t); if (t >= 5) { setWaitTill(Date.now() + 30000); setTries(0); } setErr(t >= 5 ? 'Wrong password five times. Wait 30 seconds, or ask an admin to reset it.' : 'Wrong password. Try again.'); return; }
     if (r.err) { setErr(r.err); return; }
     const sid2 = app.cloud.member.school_id, x = app.db.staff.find((y) => (y.code || '').toUpperCase() === r.code);
@@ -169,8 +170,17 @@ function Welcome() {
       <div class="boxnote warn"><span><strong>Test version.</strong> Every learner and mark here is made up.</span></div>
       <details class="small muted"><summary>Change school</summary><div class="wrap" style="margin-top:8px">${SCHOOLS.map((x) => { const st = (LS.get('teng:data:' + x.id) || {}).settings || {}; return html`<button class="schoolpick" aria-pressed=${String(sid === x.id)} onClick=${() => setSid(x.id)}><img src=${st.crest || x.crest} alt="" /><span class="grow"><b>${st.name || x.name}</b><br /><span class="tiny muted">${x.id === 'ficksburg' ? 'Pilot school' : 'Shows each school has its own data'}</span></span></button>`; })}</div></details>
     </main>
-    ${credit}
+    ${credit}${app.cloud && html`<p class="credit" style="margin-top:-6px"><button class="linkbtn tiny" onClick=${() => { setStep('dev'); setPw(''); setPw2(''); setErr(''); setCst(null); app.cloud.devExists().then((x) => setCst(x ? 'claimed' : 'invited')).catch(() => setErr('Could not reach the database.')); }}>Developer sign-in</button></p>`}
   </div>`;
+
+  if (step === 'dev') return html`<div class="welcome">
+    <header class="band"><div class="col gut band-in"><div class="band-row"><button class="iconbtn back" aria-label="Back" onClick=${() => setStep('open')}><${Icon} n="back" /></button><div class="grow"><h1>Developer sign-in</h1><div class="sub">Sets up schools and their first admin</div></div><${Logo} s=${34} /></div></div></header>
+    <main class="col gut content"><form class="card" onSubmit=${async (e) => { e.preventDefault(); if (Date.now() < waitTill) { setErr('Too many wrong tries. Wait a few seconds.'); return; } setBusy(true); setErr(''); const r = await app.cloud.devSignIn(pw, cst === 'invited' ? pw2 : null); setBusy(false); if (r.first) { setCst('invited'); return; } if (r.err === 'wrong') { const t = tries + 1; setTries(t); if (t >= 5) { setWaitTill(Date.now() + 30000); setTries(0); } setErr('Wrong password.'); return; } if (r.err) { setErr(r.err); return; } app.emit(); }}>
+      ${cst === 'invited' && html`<div class="boxnote info"><span><strong>No developer yet.</strong> Choose the developer password now. Only the first person to do this becomes the developer, so do it straight away.</span></div>`}
+      <label class="f" for="wpw">Developer password<input id="wpw" type="password" class="inp" autocomplete=${cst === 'invited' ? 'new-password' : 'current-password'} value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>
+      ${cst === 'invited' && html`<label class="f" for="wpw2">Type it again<input id="wpw2" type="password" class="inp" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /></label>`}
+      ${err && html`<span class="small" role="alert" style="color:var(--abs-ink);font-weight:600">${err}</span>`}
+      <button class="btn big" type="submit" disabled=${busy || !cst}>${busy ? 'Signing in…' : 'Sign in'}</button></form></main>${credit}</div>`;
 
   if (step === 'role') return html`<div class="welcome">
     <header class="band"><div class="col gut band-in"><div class="band-row"><button class="iconbtn back" aria-label="Back" onClick=${() => setStep('open')}><${Icon} n="back" /></button><div class="grow"><h1>Who are you?</h1><div class="sub">${s.name}</div></div><${Logo} s=${34} /></div></div></header>
@@ -189,7 +199,13 @@ function Welcome() {
       <form class="card" onSubmit=${login}>
         <label class="f" for="wsym">Your symbol<input id="wsym" class="inp" autocomplete="username" style="text-transform:uppercase" placeholder="e.g. LK" value=${sym} onInput=${(e) => { setSym(e.target.value.toUpperCase()); setWho(null); setErr(''); }} /></label>
         ${x0 && html`<span class="small muted">${x0.name} · ${x0.title}</span>`}
-        ${(onCloud() ? cst === 'free' || cst === 'new-school' : x0 && !x0.pw) ? html`<div class="boxnote info"><span><strong>First time?</strong> Choose your own password. Nobody else, not even the office, can see it.</span></div>
+        ${onCloud() && cst === 'invited' ? html`<div class="boxnote info"><span><strong>First time?</strong> Type the starting password the admin gave you, then choose your own. Nobody else, not even the office, can see yours.</span></div>
+          <label class="f" for="wst">Starting password from the admin<input id="wst" type="password" class="inp" autocomplete="off" value=${startPw} onInput=${(e) => setStartPw(e.target.value)} /></label>
+          <label class="f" for="wpw">Your new password<input id="wpw" type="password" class="inp" autocomplete="new-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>
+          <label class="f" for="wpw2">Type it again<input id="wpw2" type="password" class="inp" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /></label>`
+        : onCloud() && cst === 'free' ? html`<div class="boxnote warn"><span>${sym} has no starting password yet. Ask the admin to give you one.</span></div>`
+        : onCloud() && cst === 'no-school' ? html`<div class="boxnote warn"><span>${s.short || s.name} is not set up in KAT yet.</span></div>`
+        : (!onCloud() && x0 && !x0.pw) ? html`<div class="boxnote info"><span><strong>First time?</strong> Choose your own password. Nobody else, not even the office, can see it.</span></div>
           <label class="f" for="wpw">New password<input id="wpw" type="password" class="inp" autocomplete="new-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>
           <label class="f" for="wpw2">Type it again<input id="wpw2" type="password" class="inp" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /></label>` : html`<label class="f" for="wpw">Password<input id="wpw" type="password" class="inp" autocomplete="current-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>`}
         <label class="check"><input type="checkbox" checked=${keep} onChange=${(e) => setKeep(e.target.checked)} /><span>Remember me on this phone<br /><span class="tiny muted">Next time KAT opens straight away, no password. Untick on a shared phone.</span></span></label>
@@ -886,7 +902,7 @@ function Records({ nav }) {
 function Admin({ nav }) {
   const db = app.db, s = app.school;
   const [f, setF] = useState(() => ({ name: s.name, local: s.local || '', short: s.short, motto: s.motto || '', assembly: s.assembly, primary: s.colors.primary, accent: s.colors.accent, red: s.colors.red, reasons: app.reasonsList.join('\n'), bells: app.bells.map((b) => 'P' + b.p + ' ' + b.t + '-' + b.e).join('\n'), terms: cal(s).terms.map((t) => 'Term ' + t.n + ' ' + t.from + ' ' + t.to).join('\n'), holidays: cal(s).holidays.join('\n') }));
-  const [edit, setEdit] = useState(null), [confirmReset, setConfirmReset] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const set = (k) => (e) => setF(Object.assign({}, f, { [k]: e.target.value }));
   const save = () => {
     const bells = f.bells.split('\n').map((x) => x.match(/P?(\d+)\s+(\d\d:\d\d)\s*-\s*(\d\d:\d\d)/)).filter(Boolean).map((m) => ({ p: Number(m[1]), t: m[2], e: m[3] }));
@@ -897,7 +913,7 @@ function Admin({ nav }) {
   };
   const onCrest = (e) => { const file = e.target.files[0]; if (!file) return; const fr = new FileReader(); fr.onload = () => { app.updateSettings({ crest: fr.result }); app.toast('Crest updated.'); }; fr.readAsDataURL(file); };
   const exportJson = async () => { await saveFile('teng-' + db.schoolId + '-' + todayISO() + '.json', JSON.stringify(db, null, 1)); };
-  return html`<div class="app"><${WideBand} nav=${nav} noBack=${true} title="School settings" sub=${s.name + ' · only admins see this page'} />
+  return html`<div class="app"><${WideBand} nav=${nav} title="School settings" sub=${s.name + ' · name, crest, colours, reasons, calendar'} />
     <main class="wide gut content" style="max-width:900px">
       <section class="card"><span class="eyebrow">School</span>
         <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
@@ -922,24 +938,10 @@ function Admin({ nav }) {
         <span class="small muted">Term dates are filled in from the 2026 public school calendar. Please check them.</span>
       </section>
       <button class="btn big" onClick=${save}>Save school settings</button>
-      <section class="card"><span class="eyebrow">Timetable</span><span class="small muted">Upload the school's teacher timetable PDF (from aSc Timetables). Every teacher gets their lessons under "Period register", and the bell times update. The office can do this too.</span><button class="btn line" onClick=${() => nav.go('timetable', { mode: 'school' })}><${Icon} n="grid" s=${18} />Upload school timetable</button></section>
-      <section class="card"><div class="between"><span class="eyebrow">Staff · ${db.staff.length}</span><button class="btn sm line" onClick=${() => setEdit({ name: '', code: '', short: '', title: 'Teacher', role: 'teacher', registerClass: '', dhGrade: null })}>+ Add a person</button></div>
-        <div class="tablebox" style="max-height:420px;overflow:auto"><table class="t"><thead><tr><th>Symbol</th><th>Name</th><th>Role</th><th>Register class</th><th></th></tr></thead><tbody>
-          ${db.staff.map((p) => html`<tr><td><b>${p.code || ''}</b></td><td><b>${p.name}</b><br /><span class="tiny muted">${p.title}</span></td><td>${(ROLE_GROUPS.find((r) => r[0] === staffGroup(p)) || [])[1]}</td><td>${p.registerClass || ''}</td><td><button class="btn sm soft" onClick=${() => setEdit(Object.assign({}, p))}>Edit</button></td></tr>`)}</tbody></table></div></section>
       <section class="card"><span class="eyebrow">Data</span>
         <span class="small muted">${Object.keys(db.learners).length} learners · ${db.classes.length} register classes · ${db.groups.length} subject classes · ${Object.keys(db.registers).length} registers stored. This school's data is kept apart from every other school.</span>
         <div class="wrap"><button class="btn line" onClick=${exportJson}>Download all data (JSON)</button>${app.cloud ? null : confirmReset ? html`<button class="btn danger" onClick=${() => { app.resetSample(); setConfirmReset(false); app.toast('Sample data reset.'); }}>Yes, reset everything</button><button class="btn soft" onClick=${() => setConfirmReset(false)}>Cancel</button>` : html`<button class="btn soft" onClick=${() => setConfirmReset(true)}>Reset sample data</button>`}</div></section>
     </main>
-    ${edit && html`<${Sheet} title=${edit.id ? 'Edit ' + edit.name : 'Add a person'} onClose=${() => setEdit(null)}>
-      <label class="f" for="pn">Full name<input id="pn" class="inp" value=${edit.name} onInput=${(e) => setEdit(Object.assign({}, edit, { name: e.target.value }))} /></label>
-      <label class="f" for="psy">Symbol (as on the timetable, e.g. LK)<input id="psy" class="inp" maxlength="5" style="text-transform:uppercase" value=${edit.code || ''} onInput=${(e) => setEdit(Object.assign({}, edit, { code: e.target.value.toUpperCase().trim() }))} /></label>
-      <label class="f" for="pt">Job title<input id="pt" class="inp" value=${edit.title} onInput=${(e) => setEdit(Object.assign({}, edit, { title: e.target.value }))} /></label>
-      <div class="grid2"><label class="f" for="pr">Signs in as<select id="pr" class="inp" value=${staffGroup(edit)} onChange=${(e) => setEdit(Object.assign({}, edit, groupFields(e.target.value)))}>${ROLE_GROUPS.map(([k, l]) => html`<option value=${k}>${l}</option>`)}</select></label>
-        <label class="f" for="pc">Register class<select id="pc" class="inp" value=${edit.registerClass || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { registerClass: e.target.value || null }))}><option value="">None</option>${db.classes.map((c) => html`<option>${c.id}</option>`)}</select></label>
-        <label class="f" for="pd">Head of department for<select id="pd" class="inp" value=${edit.dhGrade || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { dhGrade: e.target.value ? Number(e.target.value) : null }))}><option value="">No grade</option>${s.grades.map((g) => html`<option value=${g}>Grade ${g}</option>`)}</select></label></div>
-      ${edit.id && (app.cloud ? html`<div class="between"><span class="small muted">If ${edit.short || edit.name} forgot their password, reset it. They choose a new one at the next sign-in.</span><button class="btn sm soft" onClick=${async () => { if (app.offline) { app.toast('Resetting a password needs signal.'); return; } const er = await app.cloud.resetSymbol(edit.code); if (er) { app.toast(er); return; } app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button></div>` : html`<div class="between"><span class="small muted">${edit.pw ? 'Has a password.' : 'No password yet. They choose one the first time they sign in.'}</span>${edit.pw && html`<button class="btn sm soft" onClick=${() => { app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button>`}</div>`)}
-      <button class="btn big" onClick=${() => { if (!edit.name.trim()) return; const sc = edit.code || symbolGuess(edit.name); const clash = db.staff.find((o) => o.id !== edit.id && o.code === sc); if (clash) { app.toast('The symbol ' + sc + ' is already used by ' + clash.name + '. Choose another.'); return; } app.saveStaff(Object.assign({}, edit, { short: edit.short || edit.name, code: edit.code || symbolGuess(edit.name) })); setEdit(null); app.toast('Saved.'); }}>Save</button>
-    <//>`}
     <${BottomNav} nav=${nav} cur="admin" /></div>`;
 }
 
@@ -1120,7 +1122,7 @@ function Timetable({ nav, mode }) {
 }
 
 /* ================= router ================= */
-const SCREENS = { home: Home, register: Register, cover: Cover, period: Period, reasons: Reasons, upload: Upload, incidents: Incidents, 'incident-new': IncidentNew, books: Books, 'book-new': BookNew, book: Book, find: Find, learner: Learner, print: PrintLists, office: Office, capture: Capture, records: Records, admin: Admin, settings: Settings, timetable: Timetable, missed: Missed, times: Times };
+const SCREENS = { home: Home, register: Register, cover: Cover, period: Period, reasons: Reasons, upload: Upload, incidents: Incidents, 'incident-new': IncidentNew, books: Books, 'book-new': BookNew, book: Book, find: Find, learner: Learner, print: PrintLists, office: Office, capture: Capture, records: Records, admin: AdminHub, schoolset: Admin, staff: Staff, learners: Learners, classes: Classes, yearend: YearEnd, settings: Settings, timetable: Timetable, missed: Missed, times: Times };
 function Root() {
   const [, force] = useState(0);
   useEffect(() => app.subscribe(() => force((x) => x + 1)), []);
@@ -1131,6 +1133,7 @@ function Root() {
   const lastSig = useRef(sig);
   useEffect(() => { if (lastSig.current !== sig) { lastSig.current = sig; setStack([]); } }, [sig]);
   useEffect(() => { const c = app.db ? app.school.colors : SCHOOLS[0].colors; const r = document.documentElement.style; r.setProperty('--primary', c.primary); r.setProperty('--accent', c.accent); r.setProperty('--red', c.red); });
+  if (app.cloud && app.cloud.dev) return html`<${Developer} /><${Toast} />`;
   if (!me) return html`<${Welcome} /><${Toast} />`;
   const cur = stack.length ? stack[stack.length - 1] : { name: start, params: {} };
   const nav = {

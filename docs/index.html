@@ -183,7 +183,7 @@ textarea.inp { min-height: 90px; resize: vertical; }
 
 /* bottom nav */
 .bnav { position: sticky; bottom: 0; z-index: 15; background: var(--surface); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom, 0px); }
-.bnav-in { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); padding-block: 4px 6px; }
+.bnav-in { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0,1fr); padding-block: 4px 6px; }
 .bnav button { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 2px; min-height: 52px; border: 0; background: none; color: var(--muted); font-size: 11px; font-weight: 500; }
 .bnav button[aria-current="page"] { color: var(--primary-ink); font-weight: 700; box-shadow: inset 0 3px 0 var(--red); }
 .credit { margin: 0; padding: 4px 16px 10px; text-align: center; font-size: 11px; color: var(--faint); }
@@ -299,7 +299,7 @@ details summary { cursor: pointer; }
 <script>window.KAT_CLOUD = {"url":"https://jyqkvnnamcawgepqloom.supabase.co","key":"sb_publishable_OacFCbKUrU294VpMEpt_lQ_rE5_pgSk"};</script>
 <script>
 /* ===== KAT core: school configuration, dates, sample data and the data store ===== */
-const TENG_VERSION = '0.5 test';
+const TENG_VERSION = '0.6 test';
 const DATA_VERSION = 7;
 
 /* ---- Schools. Each school has its own data space, name, crest and colours. ---- */
@@ -732,6 +732,37 @@ class Store {
     if (person.registerClass) { const c = this.db.classes.find((x) => x.id === person.registerClass); if (c) { const old = this.db.staff.find((s) => s.id === c.teacherId && s.id !== person.id); if (old) old.registerClass = null; c.teacherId = person.id; } }
     this.commit();
   }
+  // learners and classes (admin)
+  saveLearner(l, oldAcc) {
+    if (oldAcc && oldAcc !== l.acc) { delete this.db.learners[oldAcc]; this.db.groups.forEach((g) => { g.learners = g.learners.map((a) => (a === oldAcc ? l.acc : a)); }); }
+    this.db.learners[l.acc] = Object.assign({ gender: '', dob: '', regDate: todayISO(), archiveDate: null, cls: null }, this.db.learners[l.acc] || {}, l); this.commit();
+  }
+  // a learner who leaves keeps their old registers (the circuit manager may ask); they just drop off every class list
+  archiveLearner(acc, reason) { const l = this.db.learners[acc]; if (!l) return; l.archiveDate = reason ? todayISO() : null; l.archiveReason = reason || null; if (reason) { l.lastCls = l.cls || l.lastCls || null; l.cls = null; this.db.groups.forEach((g) => { g.learners = g.learners.filter((x) => x !== acc); }); } else if (!l.cls && l.lastCls) l.cls = l.lastCls; this.commit(); }
+  enrolClass(cls, list) {
+    let added = 0, moved = 0;
+    list.forEach((x) => { const ex = this.db.learners[x.acc]; if (!ex) { this.db.learners[x.acc] = { acc: x.acc, surname: x.surname, first: x.first, gender: x.gender || '', dob: x.dob || '', regDate: todayISO(), archiveDate: null, cls }; added++; } else if (ex.cls !== cls || ex.archiveDate) { ex.cls = cls; ex.archiveDate = null; ex.archiveReason = null; moved++; } });
+    this.commit(); return { added, moved };
+  }
+  addClass(id, grade) { if (this.db.classes.find((c) => c.id === id)) return false; this.db.classes.push({ id, grade, teacherId: null }); this.db.classes.sort((a, b) => a.grade - b.grade || a.id.localeCompare(b.id)); this.commit(); return true; }
+  removeClass(id) { if (classLearners(this.db, id).length) return false; const c = this.db.classes.find((x) => x.id === id); if (c && c.teacherId) { const t = this.db.staff.find((x) => x.id === c.teacherId); if (t) t.registerClass = null; } this.db.classes = this.db.classes.filter((x) => x.id !== id); this.commit(); return true; }
+  setClassTeacher(id, uid) { const t = this.db.staff.find((x) => x.id === uid); if (t) { this.saveStaff(Object.assign({}, t, { registerClass: id })); return; } const c = this.db.classes.find((x) => x.id === id); if (c && c.teacherId) { const o = this.db.staff.find((x) => x.id === c.teacherId); if (o) o.registerClass = null; c.teacherId = null; } this.commit(); }
+  // year end: every learner moves up one grade into the class with the same letter; Grade 12 finishes school
+  promotionPlan() {
+    const top = Math.max(...this.school.grades); const plan = { up: [], done: [], missing: new Set() };
+    Object.values(this.db.learners).forEach((l) => { if (l.archiveDate || !l.cls) return; const c = this.db.classes.find((x) => x.id === l.cls); if (!c) return;
+      if (c.grade >= top) { plan.done.push(l.acc); return; }
+      const to = (c.grade + 1) + l.cls.slice(String(c.grade).length); if (!this.db.classes.find((x) => x.id === to)) plan.missing.add(to); plan.up.push([l.acc, to]); });
+    return plan;
+  }
+  promoteYear() {
+    const plan = this.promotionPlan(); plan.missing.forEach((id) => this.db.classes.push({ id, grade: parseInt(id, 10), teacherId: null }));
+    plan.up.forEach(([a, to]) => { this.db.learners[a].cls = to; });
+    plan.done.forEach((a) => { const l = this.db.learners[a]; l.lastCls = l.cls; l.cls = null; l.archiveDate = todayISO(); l.archiveReason = 'Finished Grade 12'; });
+    this.db.settings = Object.assign({}, this.db.settings, { promotedAt: stamp(), promotedBy: this.session.userId });
+    this.commit(); return { up: plan.up.length, done: plan.done.length };
+  }
+  removeStaff(uid) { const p = this.db.staff.find((x) => x.id === uid); if (!p) return; this.db.classes.forEach((c) => { if (c.teacherId === uid) c.teacherId = null; }); this.db.groups.forEach((g) => { if (g.teacherId === uid) g.teacherId = null; }); this.db.staff = this.db.staff.filter((x) => x.id !== uid); this.commit(); }
   resetSample() { const id = this.db.schoolId; LS.del(this.key(id)); delete MEM[id]; this.db = generateSample(SCHOOLS.find((s) => s.id === id), todayISO()); this.commit(); }
 }
 
@@ -889,14 +920,15 @@ function printedLine(app, school) { return 'Printed ' + fmtDMY(todayISO()) + ' '
 
 function morningRegisterModel(app, cls, y, m) {
   const db = app.db, school = app.school, N = daysInMonth(y, m), today = todayISO();
-  const accs = classLearners(db, cls); const c = db.classes.find((x) => x.id === cls);
   const days = []; for (let d = 1; d <= N; d++) days.push(y + '-' + pad(m + 1) + '-' + pad(d));
+  // learners who left during or after this month stay on it, with their archive date
+  const accs = classLearners(db, cls).concat(sortAcc(db, Object.keys(db.learners).filter((a) => { const l = db.learners[a]; return l.archiveDate && (l.lastCls || l.cls) === cls && l.archiveDate >= days[0]; }))); const c = db.classes.find((x) => x.id === cls);
   const head = ['#', 'Accession No', 'Learner Name', 'Date of Birth', 'Date of Registration', 'Date of Archive', 'Gender'].concat(days.map((d) => parse(d).getDate() + '\n' + DOW[dow(d)].charAt(0)), ['Total']);
   const rowsAll = accs.map((acc, i) => {
     const l = db.learners[acc]; let tot = 0;
     const cells = days.map((d) => {
       if (!isSchoolDay(school, d)) return { t: '', cls: 'sh' };
-      if (d > today) return '';
+      if (d > today || (l.archiveDate && d > l.archiveDate)) return '';
       const mm = morningMark(db, acc, d); if (mm === 'P' || mm === 'L') tot++; return markCell(mm);
     });
     return [String(i + 1), acc, { t: learnerName(l), align: 'l' }, fmtDMY(l.dob), fmtDMY(l.regDate), fmtDMY(l.archiveDate), l.gender].concat(cells, [String(tot)]);
@@ -1155,6 +1187,7 @@ function matchStaff(db, ttName) {
 const CLOUD_MAPS = ['registers', 'reasons', 'captured', 'changes', 'learners'];
 const CLOUD_LISTS = ['staff', 'classes', 'groups', 'incidents', 'books'];
 const CLOUD_SINGLE = ['settings', 'log'];
+const CLOUD_ADMIN = ['staff', 'classes', 'settings'];
 class Cloud {
   constructor() {
     const cfg = window.KAT_CLOUD;
@@ -1176,37 +1209,88 @@ class Cloud {
     const { data, error } = await this.sb.rpc('symbol_status', { p_school: school, p_code: String(code).trim().toUpperCase() });
     if (error) throw error; return data;
   }
-  // sign in (or, the first time, choose a password). Returns { ok } or { err } or { first: true } when a new password is needed.
-  async signIn(school, code, pw, pw2) {
+  // sign in. The first time, a person types the starting password the admin gave them, then chooses their own.
+  // Returns { ok, code } or { err } or { first: true } when the starting password is needed.
+  async signIn(school, code, pw, start, pw2) {
     code = String(code).trim().toUpperCase();
     let st; try { st = await this.status(school, code); } catch (e) { return { err: 'Could not reach the school database. Check the signal and try again.' }; }
     if (st === 'unknown') return { err: 'No staff member has the symbol "' + code + '" at this school. Check with the office.' };
+    if (st === 'no-school') return { err: 'This school is not set up in KAT yet. The developer sets it up and gives the first admin a starting password.' };
+    if (st === 'free') return { err: code + ' has no starting password yet. Ask the admin to give you one (Admin, Staff, your name, Give a starting password).' };
     if (st === 'claimed') {
       const { data, error } = await this.sb.auth.signInWithPassword({ email: this.email(school, code), password: pw });
       if (error) return { err: /invalid/i.test(error.message) ? 'wrong' : error.message };
       this.user = data.user;
     } else {
-      if (!pw2) return { first: true };
+      if (!start) return { first: true };
       if (pw.length < 6) return { err: 'Choose a password of at least 6 characters.' };
-      if (pw !== pw2) return { err: 'The two passwords are not the same.' };
+      if (pw !== pw2) return { err: 'The two new passwords are not the same.' };
+      const ok = await this.sb.rpc('check_start', { p_school: school, p_code: code, p_start: start });
+      if (ok.error) return { err: ok.error.message }; if (!ok.data) return { err: 'wrong-start' };
       await this.sb.auth.signOut().catch(() => {});
       const { data, error } = await this.sb.auth.signUp({ email: this.email(school, code), password: pw });
       if (error || !data.session) return { err: (error && error.message) || 'Could not create the login.' };
       this.user = data.user;
-      const c = await this.sb.rpc('claim_symbol', { p_school: school, p_code: code });
+      const c = await this.sb.rpc('claim_symbol', { p_school: school, p_code: code, p_start: start });
       if (c.error) return { err: c.error.message };
-      if (st === 'new-school') { this.member = { school_id: school, staff_code: code }; this.last = {}; await this.push(true); LS.set('kat:cloud:' + school, 1); }
     }
+    this.dev = false;
     await this.start();
     return { ok: true, code };
   }
-  async signOut() { this.stop(); this.user = null; this.member = null; await this.sb.auth.signOut().catch(() => {}); }
+  // the developer login (KK Lekenyane): sets up schools and their first admin
+  devEmail() { return 'developer@kat.invalid'; }
+  async devExists() { const r = await this.sb.rpc('developer_exists'); if (r.error) throw r.error; return r.data; }
+  async devSignIn(pw, pw2) {
+    let exists; try { exists = await this.devExists(); } catch (e) { return { err: 'Could not reach the database. Check the signal and try again.' }; }
+    if (exists) {
+      const { data, error } = await this.sb.auth.signInWithPassword({ email: this.devEmail(), password: pw });
+      if (error) return { err: /invalid/i.test(error.message) ? 'wrong' : error.message };
+      this.user = data.user;
+    } else {
+      if (!pw2) return { first: true };
+      if (pw.length < 8) return { err: 'The developer password needs at least 8 characters.' };
+      if (pw !== pw2) return { err: 'The two passwords are not the same.' };
+      await this.sb.auth.signOut().catch(() => {});
+      const { data, error } = await this.sb.auth.signUp({ email: this.devEmail(), password: pw });
+      if (error || !data.session) return { err: (error && error.message) || 'Could not create the login.' };
+      this.user = data.user;
+      const c = await this.sb.rpc('claim_developer'); if (c.error) return { err: c.error.message };
+    }
+    await this.start(); return this.dev ? { ok: true } : { err: 'This login is not the developer.' };
+  }
+  async overview() { const r = await this.sb.rpc('school_overview'); return r.error ? [] : r.data; }
+  async wipe(school) { const r = await this.sb.rpc('wipe_school', { p_school: school }); return r.error ? r.error.message : null; }
+  // a new school: its records (sample or empty) plus the first admin with a starting password
+  async setupSchool(schoolId, admin, startPw, sample) {
+    const school = SCHOOLS.find((x) => x.id === schoolId); const today = todayISO();
+    let db;
+    if (sample) db = generateSample(school, today);
+    else {
+      db = { v: DATA_VERSION, schoolId, createdFor: today, settings: {}, staff: [], classes: [], learners: {}, groups: [], registers: {}, reasons: {}, captured: {}, incidents: [], books: [], log: [], changes: {} };
+      school.grades.forEach((g) => (school.letters || ['A']).forEach((l) => db.classes.push({ id: g + l, grade: g, teacherId: null })));
+    }
+    uniqueSymbols(db);
+    const code = admin.code.trim().toUpperCase();
+    let p = db.staff.find((x) => (x.code || '').toUpperCase() === code);
+    if (!p) { p = Object.assign({ id: 's' + Date.now().toString(36), name: admin.name.trim(), short: admin.name.trim(), code, title: 'Administrative clerk', registerClass: null, dhGrade: null }, groupFields('admin')); db.staff.push(p); }
+    const rows = Object.values(this.rows(db)).map((r) => Object.assign({ school_id: schoolId }, r));
+    for (let i = 0; i < rows.length; i += 400) { const { error } = await this.sb.from('docs').upsert(rows.slice(i, i + 400), { onConflict: 'school_id,coll,id' }); if (error) return error.message; }
+    const r = await this.sb.rpc('set_start_password', { p_school: schoolId, p_code: code, p_pw: startPw });
+    if (r.error) return r.error.message;
+    LS.del('teng:data:' + schoolId); LS.del('kat:cloud:' + schoolId);
+    return null;
+  }
+  // admin: give a staff member a starting password (also ends their old login)
+  async setStart(code, pw) { const r = await this.sb.rpc('set_start_password', { p_school: this.member.school_id, p_code: String(code).toUpperCase(), p_pw: pw }); return r.error ? r.error.message : null; }
+  canAdmin() { const me = this.store.me; return !!me && ['admin', 'principal'].includes(staffGroup(me)); }
+  async signOut() { this.stop(); this.user = null; this.member = null; this.dev = false; await this.sb.auth.signOut().catch(() => {}); }
   async changePassword(pw) { const { error } = await this.sb.auth.updateUser({ password: pw }); return error ? error.message : null; }
-  async resetSymbol(code) { const { error } = await this.sb.rpc('reset_symbol', { p_code: code }); return error ? error.message : null; }
 
   async start() {
     const s = this.store;
     const m = await this.sb.from('members').select('school_id, staff_code').eq('user_id', this.user.id).maybeSingle();
+    if (!m.error && !m.data) { const d = await this.sb.rpc('is_developer'); if (d.data) { this.dev = true; this.ready = false; this.err = null; s.emit(); return; } }
     if (m.error || !m.data) { this.err = m.error ? m.error.message : 'This login is not linked to a school.'; s.emit(); return; }
     this.member = m.data;
     if (!s.db || s.db.schoolId !== m.data.school_id) s.loadSchool(m.data.school_id);
@@ -1290,8 +1374,9 @@ class Cloud {
     try {
       const school = this.member.school_id, now = this.rows(s.db), up = [], gone = [];
       const waiting = Object.keys(s.db.registers).filter((k) => !s.db.registers[k].synced);
-      Object.entries(now).forEach(([k, r]) => { const js = JSON.stringify(r.data); if (this.last[k] !== js) up.push(Object.assign({ school_id: school, updated_at: new Date().toISOString() }, r)); });
-      Object.keys(this.last).forEach((k) => { if (!now[k]) gone.push(k); });
+      const mine = (k) => this.canAdmin() || !CLOUD_ADMIN.includes(k.split('\u0001')[0]); // only admins may change staff, classes and settings
+      Object.entries(now).forEach(([k, r]) => { if (!mine(k)) return; const js = JSON.stringify(r.data); if (this.last[k] !== js) up.push(Object.assign({ school_id: school, updated_at: new Date().toISOString() }, r)); });
+      Object.keys(this.last).forEach((k) => { if (!now[k] && mine(k)) gone.push(k); });
       for (let i = 0; i < up.length; i += 400) {
         const part = up.slice(i, i + 400);
         const { error } = await this.sb.from('docs').upsert(part, { onConflict: 'school_id,coll,id' });
@@ -1313,6 +1398,212 @@ class Cloud {
   }
 }
 const cloud = new Cloud();
+
+/* ================= admin: one menu for the office and the principal ================= */
+const ADD_AS = { teacher: 'Add a teacher', smt: 'Add an SMT member', principal: 'Add a principal', admin: 'Add an administrator' };
+const TITLE_FOR = { teacher: 'Teacher', smt: 'Head of Department', principal: 'Principal', admin: 'Administrative clerk' };
+function HubRow({ ic, label, sub, onClick }) {
+  return html`<button class="list-row" onClick=${onClick}><${Icon} n=${ic} /><span class="grow"><b>${label}</b>${sub && html`<br /><span class="tiny muted">${sub}</span>`}</span><${Icon} n="chev" s=${18} /></button>`;
+}
+function AdminHub({ nav }) {
+  const db = app.db, s = app.school;
+  const learners = Object.values(db.learners).filter((l) => !l.archiveDate).length;
+  const noReg = db.classes.filter((c) => !c.teacherId).length;
+  const exportJson = async () => { await saveFile('kat-' + db.schoolId + '-' + todayISO() + '.json', JSON.stringify(db, null, 1)); };
+  return html`<div class="app"><${WideBand} nav=${nav} noBack=${true} title="Admin" sub=${s.name + ' · office and principal'} />
+    <main class="wide gut content" style="max-width:900px">
+      <section class="card"><span class="eyebrow">Staff · ${db.staff.length}</span>
+        <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr))">${Object.entries(ADD_AS).map(([g, l]) => html`<button class="btn line" onClick=${() => nav.go('staff', { add: g })}><${Icon} n="plus" s=${18} />${l}</button>`)}</div>
+        <div class="card flat" style="padding:0"><${HubRow} ic="user" label="All staff" sub="Edit details and symbols, register classes, SMT grade, starting passwords, remove someone who left" onClick=${() => nav.go('staff')} /></div></section>
+      <section class="card"><span class="eyebrow">Learners · ${learners}</span>
+        <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr))"><button class="btn line" onClick=${() => nav.go('learners', { add: true })}><${Icon} n="plus" s=${18} />Enrol a learner</button><button class="btn line" onClick=${() => nav.go('learners', { imp: true })}><${Icon} n="file" s=${18} />Enrol a class from SA-SAMS Excel</button></div>
+        <div class="card flat" style="padding:0"><${HubRow} ic="search" label="All learners" sub="Change details, move to another class, mark as left school" onClick=${() => nav.go('learners')} /><${HubRow} ic="list" label="Register classes" sub=${db.classes.length + ' classes' + (noReg ? ' · ' + noReg + ' without a register teacher' : '')} onClick=${() => nav.go('classes')} /><${HubRow} ic="swap" label="End of year: move learners up a grade" sub="Grade 8A becomes 9A, and so on. Grade 12 finishes." onClick=${() => nav.go('yearend')} /></div></section>
+      <section class="card"><span class="eyebrow">Timetable and calendar</span>
+        <div class="card flat" style="padding:0"><${HubRow} ic="grid" label="Upload the school timetable" sub="The aSc Timetables teacher PDF. Every teacher gets their lessons." onClick=${() => nav.go('timetable', { mode: 'school' })} /><${HubRow} ic="cal" label="Assembly and sign-off times" onClick=${() => nav.go('times')} /><${HubRow} ic="cal" label="Terms, holidays and bell times" sub="No-school days for one day are on the Today screen" onClick=${() => nav.go('schoolset')} /></div></section>
+      <section class="card"><span class="eyebrow">School</span>
+        <div class="card flat" style="padding:0"><${HubRow} ic="gear" label="Name, crest, colours and absence reasons" onClick=${() => nav.go('schoolset')} /></div>
+        <button class="btn line" onClick=${exportJson}>Download all data (backup)</button></section>
+    </main><${BottomNav} nav=${nav} cur="admin" /></div>`;
+}
+
+/* ---- staff ---- */
+function Staff({ nav, add }) {
+  const db = app.db, s = app.school;
+  const blank = (g) => Object.assign({ name: '', code: '', short: '', title: TITLE_FOR[g] || 'Teacher', registerClass: '', dhGrade: null }, groupFields(g || 'teacher'));
+  const [edit, setEdit] = useState(() => (add ? blank(add) : null)), [q, setQ] = useState(''), [start, setStart] = useState(''), [busy, setBusy] = useState(false), [sure, setSure] = useState(false);
+  const open = (p) => { setEdit(p); setStart(''); setSure(false); };
+  const ql = q.trim().toLowerCase();
+  const list = db.staff.filter((p) => !ql || (p.name + ' ' + (p.code || '') + ' ' + p.title).toLowerCase().includes(ql));
+  const save = async () => {
+    if (!edit.name.trim()) { app.toast('Type the full name.'); return; }
+    const sc = (edit.code || symbolGuess(edit.name)).toUpperCase();
+    const clash = db.staff.find((o) => o.id !== edit.id && o.code === sc); if (clash) { app.toast('The symbol ' + sc + ' is already used by ' + clash.name + '. Choose another.'); return; }
+    if (app.cloud && !edit.id && start.length < 6) { app.toast('Give a starting password of at least 6 characters, so ' + edit.name + ' can sign in.'); return; }
+    if (app.cloud && start && start.length < 6) { app.toast('The starting password needs at least 6 characters.'); return; }
+    const was = edit.id && db.staff.find((o) => o.id === edit.id);
+    if (app.cloud && was && was.code && was.code !== sc && !start) { app.toast('Changing a symbol ends that person\'s login. Give them a new starting password too.'); return; }
+    setBusy(true);
+    app.saveStaff(Object.assign({}, edit, { short: edit.short || edit.name, code: sc }));
+    if (app.cloud && start) {
+      if (app.offline) { setBusy(false); app.toast('Saved. Giving a starting password needs signal: try again when you have it.'); return; }
+      await new Promise((r) => setTimeout(r, 900)); // let the new staff record reach the database first
+      await app.cloud.push();
+      const er = await app.cloud.setStart(sc, start); setBusy(false);
+      if (er) { app.toast('Saved, but the starting password did not work: ' + er); return; }
+      setEdit(null); app.toast(edit.name + ' can now sign in as ' + sc + ' with the starting password, then choose their own.'); return;
+    }
+    setBusy(false); setEdit(null); app.toast('Saved.');
+  };
+  const grp = edit ? staffGroup(edit) : null;
+  return html`<div class="app"><${WideBand} nav=${nav} title="Staff" sub=${s.name + ' · ' + db.staff.length + ' people'} />
+    <main class="wide gut content" style="max-width:900px">
+      <div class="wrap">${Object.entries(ADD_AS).map(([g, l]) => html`<button class="btn sm line" onClick=${() => open(blank(g))}>+ ${l.replace(/^Add an? /, '')}</button>`)}</div>
+      <label class="f" for="sq">Search<input id="sq" class="inp" placeholder="Name or symbol" value=${q} onInput=${(e) => setQ(e.target.value)} /></label>
+      <div class="tablebox" style="max-height:60vh;overflow:auto"><table class="t"><thead><tr><th>Symbol</th><th>Name</th><th>Signs in as</th><th>Register class</th><th></th></tr></thead><tbody>
+        ${list.map((p) => html`<tr><td><b>${p.code || ''}</b></td><td><b>${p.name}</b><br /><span class="tiny muted">${p.title}${p.dhGrade ? ' · Grade ' + p.dhGrade : ''}</span></td><td>${(ROLE_GROUPS.find((r) => r[0] === staffGroup(p)) || [])[1]}</td><td>${p.registerClass || ''}</td><td><button class="btn sm soft" onClick=${() => open(Object.assign({}, p))}>Edit</button></td></tr>`)}</tbody></table></div>
+    </main>
+    ${edit && html`<${Sheet} title=${edit.id ? 'Edit ' + edit.name : ADD_AS[grp]} onClose=${() => setEdit(null)}>
+      <label class="f" for="pn">Full name<input id="pn" class="inp" placeholder="e.g. Mr T. Mokoena" value=${edit.name} onInput=${(e) => setEdit(Object.assign({}, edit, { name: e.target.value }))} /></label>
+      <div class="grid2"><label class="f" for="psy">Symbol (as on the timetable)<input id="psy" class="inp" maxlength="5" style="text-transform:uppercase" placeholder=${edit.name ? symbolGuess(edit.name) : 'e.g. LK'} value=${edit.code || ''} onInput=${(e) => setEdit(Object.assign({}, edit, { code: e.target.value.toUpperCase().trim() }))} /></label>
+        <label class="f" for="pt">Job title<input id="pt" class="inp" value=${edit.title} onInput=${(e) => setEdit(Object.assign({}, edit, { title: e.target.value }))} /></label></div>
+      <div class="grid2"><label class="f" for="pr">Signs in as<select id="pr" class="inp" value=${grp} onChange=${(e) => setEdit(Object.assign({}, edit, groupFields(e.target.value), edit.title === TITLE_FOR[grp] ? { title: TITLE_FOR[e.target.value] } : {}))}>${ROLE_GROUPS.map(([k, l]) => html`<option value=${k}>${l}</option>`)}</select></label>
+        <label class="f" for="pc">Register class<select id="pc" class="inp" value=${edit.registerClass || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { registerClass: e.target.value || null }))}><option value="">None</option>${db.classes.map((c) => html`<option value=${c.id}>${c.id}${c.teacherId && c.teacherId !== edit.id ? ' (now ' + staffSym(db, c.teacherId) + ')' : ''}</option>`)}</select></label>
+        ${(grp === 'smt' || grp === 'teacher') && html`<label class="f" for="pd">SMT for grade<select id="pd" class="inp" value=${edit.dhGrade || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { dhGrade: e.target.value ? Number(e.target.value) : null }, e.target.value ? { smt: true } : {}))}><option value="">No grade</option>${s.grades.map((g) => html`<option value=${g}>Grade ${g}</option>`)}</select></label>`}</div>
+      ${app.cloud ? html`<label class="f" for="pst">${edit.id ? 'Give a new starting password (if they forgot theirs)' : 'Starting password'}<input id="pst" class="inp" autocomplete="off" placeholder=${edit.id ? 'Leave empty to keep their password' : 'At least 6 characters'} value=${start} onInput=${(e) => setStart(e.target.value)} /></label>
+        <span class="tiny muted">Tell them their symbol and this starting password. The first time they sign in, KAT asks them to choose their own password. A new starting password ends their old one.</span>`
+        : edit.id && html`<div class="between"><span class="small muted">${edit.pw ? 'Has a password.' : 'No password yet. They choose one the first time they sign in.'}</span>${edit.pw && html`<button class="btn sm soft" onClick=${() => { app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button>`}</div>`}
+      <button class="btn big" disabled=${busy} onClick=${save}>${busy ? 'Saving…' : 'Save'}</button>
+      ${edit.id && edit.id !== app.me.id && (sure ? html`<div class="boxnote warn"><span>Remove ${edit.name} from the staff list? Their registers stay. Their classes need a new teacher.</span></div><div class="wrap"><button class="btn danger" onClick=${() => { app.removeStaff(edit.id); setEdit(null); app.toast(edit.name + ' was removed.'); }}>Yes, remove</button><button class="btn soft" onClick=${() => setSure(false)}>Cancel</button></div>` : html`<button class="linkbtn" onClick=${() => setSure(true)}>Remove this person (left the school)</button>`)}
+    <//>`}
+  </div>`;
+}
+function staffSym(db, uid) { const p = db.staff.find((x) => x.id === uid); return p ? p.code || p.name : '?'; }
+
+/* ---- learners ---- */
+function Learners({ nav, add, imp }) {
+  const db = app.db, s = app.school;
+  const [q, setQ] = useState(''), [cls, setCls] = useState(''), [left, setLeft] = useState(false);
+  const [edit, setEdit] = useState(() => (add ? { acc: '', surname: '', first: '', gender: '', dob: '', cls: '' } : null)), [old, setOld] = useState(null), [why, setWhy] = useState('');
+  const [im, setIm] = useState(!!imp), [res, setRes] = useState(null), [to, setTo] = useState(''), [err, setErr] = useState('');
+  const ql = q.trim().toLowerCase();
+  const all = Object.values(db.learners).filter((l) => (left ? l.archiveDate : !l.archiveDate) && (!cls || l.cls === cls || l.lastCls === cls) && (!ql || (l.acc + ' ' + l.first + ' ' + l.surname).toLowerCase().includes(ql)))
+    .sort((a, b) => (a.cls || '').localeCompare(b.cls || '') || (a.surname + a.first).localeCompare(b.surname + b.first));
+  const shown = all.slice(0, 120);
+  const save = () => {
+    const l = Object.assign({}, edit, { acc: String(edit.acc).trim(), surname: edit.surname.trim(), first: edit.first.trim() });
+    if (!l.acc || !l.surname || !l.first) { app.toast('Accession number, surname and first name are needed.'); return; }
+    if (l.acc !== old && db.learners[l.acc]) { app.toast('Accession number ' + l.acc + ' already belongs to ' + learnerShort(db.learners[l.acc]) + '.'); return; }
+    l.cls = l.cls || null; app.saveLearner(l, old); setEdit(null); app.toast(old ? 'Saved.' : learnerShort(l) + ' is enrolled' + (l.cls ? ' in ' + l.cls : '') + '.');
+  };
+  const onFile = (e) => { const f = e.target.files[0]; if (!f) return; setErr(''); const fr = new FileReader(); fr.onload = () => { try { const r = parseClassList(new Uint8Array(fr.result), f.name); if (r.error) { setErr(r.error); setRes(null); } else { setRes(r); const guess = (r.cls || '').toUpperCase().replace(/\s/g, ''); setTo(db.classes.find((c) => c.id === guess) ? guess : ''); } } catch (x) { setErr('KAT could not read this file. Is it an Excel file (.xls or .xlsx)?'); } }; fr.readAsArrayBuffer(f); };
+  return html`<div class="app"><${WideBand} nav=${nav} title="Learners" sub=${s.name + ' · ' + Object.values(db.learners).filter((l) => !l.archiveDate).length + ' at school'} />
+    <main class="wide gut content" style="max-width:900px">
+      <div class="wrap"><button class="btn sm line" onClick=${() => { setOld(null); setEdit({ acc: '', surname: '', first: '', gender: '', dob: '', cls: cls || '' }); }}>+ Enrol a learner</button><button class="btn sm line" onClick=${() => { setIm(!im); setRes(null); }}>${im ? 'Close Excel import' : 'Enrol a class from Excel'}</button></div>
+      ${im && html`<section class="card"><span class="eyebrow">Enrol a class from an SA-SAMS Excel list</span>
+        <label class="btn line" for="lxl" style="cursor:pointer"><${Icon} n="file" s=${18} />${res ? 'Choose a different file' : 'Choose an Excel file'}</label><input id="lxl" type="file" accept=".xls,.xlsx,.csv" style="position:absolute;width:1px;height:1px;opacity:0" onChange=${onFile} />
+        ${err && html`<span class="small" role="alert" style="color:var(--abs-ink);font-weight:600">${err}</span>`}
+        ${res && html`<span class="small">${res.learners.length} learners found${res.cls ? ' · file says ' + res.cls : ''}. ${res.learners.filter((x) => db.learners[x.acc]).length} are already in KAT and will move to the class you choose.</span>
+          <label class="f" for="lto">Register class<select id="lto" class="inp" value=${to} onChange=${(e) => setTo(e.target.value)}><option value="">Choose…</option>${db.classes.map((c) => html`<option value=${c.id}>${c.id}</option>`)}</select></label>
+          <button class="btn big" disabled=${!to} onClick=${() => { const r = app.enrolClass(to, res.learners); setRes(null); setIm(false); setCls(to); app.toast(to + ': ' + r.added + ' enrolled, ' + r.moved + ' moved from another class.'); }}>Enrol into ${to || '…'}</button>`}</section>`}
+      <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))"><label class="f" for="lq">Search<input id="lq" class="inp" placeholder="Name or accession number" value=${q} onInput=${(e) => setQ(e.target.value)} /></label>
+        <label class="f" for="lc">Class<select id="lc" class="inp" value=${cls} onChange=${(e) => setCls(e.target.value)}><option value="">All classes</option>${db.classes.map((c) => html`<option value=${c.id}>${c.id}</option>`)}</select></label>
+        <label class="check" style="align-self:end"><input type="checkbox" checked=${left} onChange=${(e) => setLeft(e.target.checked)} /><span>Show learners who left</span></label></div>
+      <div class="tablebox" style="max-height:60vh;overflow:auto"><table class="t"><thead><tr><th>Acc. no</th><th>Learner</th><th>Class</th><th></th></tr></thead><tbody>
+        ${shown.map((l) => html`<tr><td>${l.acc}</td><td><b>${learnerName(l)}</b>${l.archiveDate && html`<br /><span class="tiny muted">Left ${fmtDMY(l.archiveDate)}${l.archiveReason ? ' · ' + l.archiveReason : ''}</span>`}</td><td>${l.cls || l.lastCls || ''}</td><td><button class="btn sm soft" onClick=${() => { setOld(l.acc); setWhy(''); setEdit(Object.assign({}, l, { cls: l.cls || '' })); }}>Edit</button></td></tr>`)}</tbody></table></div>
+      ${all.length > shown.length && html`<span class="small muted">Showing ${shown.length} of ${all.length}. Search or pick a class to narrow it down.</span>`}
+    </main>
+    ${edit && html`<${Sheet} title=${old ? learnerShort(db.learners[old]) : 'Enrol a learner'} onClose=${() => setEdit(null)}>
+      <div class="grid2"><label class="f" for="la">Accession number<input id="la" class="inp" inputmode="numeric" value=${edit.acc} onInput=${(e) => setEdit(Object.assign({}, edit, { acc: e.target.value }))} /></label>
+        <label class="f" for="lcl">Register class<select id="lcl" class="inp" value=${edit.cls || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { cls: e.target.value }))}><option value="">None yet</option>${db.classes.map((c) => html`<option value=${c.id}>${c.id}</option>`)}</select></label>
+        <label class="f" for="ls">Surname<input id="ls" class="inp" value=${edit.surname} onInput=${(e) => setEdit(Object.assign({}, edit, { surname: e.target.value }))} /></label>
+        <label class="f" for="lf">First name<input id="lf" class="inp" value=${edit.first} onInput=${(e) => setEdit(Object.assign({}, edit, { first: e.target.value }))} /></label>
+        <label class="f" for="lg">Gender<select id="lg" class="inp" value=${edit.gender || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { gender: e.target.value }))}><option value="">–</option><option value="M">M</option><option value="F">F</option></select></label>
+        <label class="f" for="ld">Date of birth<input id="ld" type="date" class="inp" value=${edit.dob || ''} onInput=${(e) => setEdit(Object.assign({}, edit, { dob: e.target.value }))} /></label></div>
+      <button class="btn big" onClick=${save}>${old ? 'Save' : 'Enrol'}</button>
+      ${old && (edit.archiveDate ? html`<button class="btn line" onClick=${() => { app.archiveLearner(old, null); setEdit(null); app.toast('Back at school.'); }}>Undo: learner is back at school</button>`
+        : html`<div class="card flat stack"><span class="small muted">Learner left the school? Their old registers stay for the records. They drop off the class lists from today.</span>
+          <label class="f" for="lw">Reason<select id="lw" class="inp" value=${why} onChange=${(e) => setWhy(e.target.value)}><option value="">Choose…</option>${['Transferred to another school', 'Left school', 'Moved away', 'Deceased', 'Other'].map((x) => html`<option>${x}</option>`)}</select></label>
+          <button class="btn danger" disabled=${!why} onClick=${() => { app.archiveLearner(old, why); setEdit(null); app.toast(learnerShort(db.learners[old]) + ' was marked as left.'); }}>Mark as left school</button></div>`)}
+    <//>`}
+  </div>`;
+}
+
+/* ---- register classes ---- */
+function Classes({ nav }) {
+  const db = app.db, s = app.school;
+  const [g, setG] = useState(String(s.grades[0])), [letter, setLetter] = useState('');
+  const teachers = db.staff.filter((p) => staffGroup(p) !== 'admin');
+  return html`<div class="app"><${WideBand} nav=${nav} title="Register classes" sub=${s.name + ' · ' + db.classes.length + ' classes'} />
+    <main class="wide gut content" style="max-width:900px">
+      <div class="tablebox"><table class="t"><thead><tr><th>Class</th><th>Learners</th><th>Register teacher</th><th></th></tr></thead><tbody>
+        ${db.classes.map((c) => { const n = classLearners(db, c.id).length; return html`<tr><td><b>${c.id}</b></td><td>${n}</td><td><select class="inp" style="min-height:38px" aria-label=${'Register teacher for ' + c.id} value=${c.teacherId || ''} onChange=${(e) => { app.setClassTeacher(c.id, e.target.value); app.toast(c.id + ': ' + (e.target.value ? staffName(db, e.target.value) : 'no register teacher') + '.'); }}><option value="">Nobody yet</option>${teachers.map((p) => html`<option value=${p.id}>${(p.code ? p.code + ' · ' : '') + p.name}</option>`)}</select></td>
+          <td>${n ? null : html`<button class="btn sm soft" onClick=${() => { app.removeClass(c.id); app.toast(c.id + ' removed.'); }}>Remove</button>`}</td></tr>`; })}</tbody></table></div>
+      <section class="card"><span class="eyebrow">Add a class</span><div class="row" style="flex-wrap:wrap;gap:10px">
+        <select class="inp" style="width:auto" aria-label="Grade" value=${g} onChange=${(e) => setG(e.target.value)}>${s.grades.map((x) => html`<option value=${x}>Grade ${x}</option>`)}</select>
+        <input class="inp" style="width:90px;text-transform:uppercase" aria-label="Letter" placeholder="F" maxlength="2" value=${letter} onInput=${(e) => setLetter(e.target.value.toUpperCase().trim())} />
+        <button class="btn line" onClick=${() => { if (!letter) return; const id = g + letter; app.toast(app.addClass(id, Number(g)) ? id + ' added.' : id + ' already exists.'); setLetter(''); }}>Add ${letter ? g + letter : ''}</button></div>
+        <span class="tiny muted">A class can be removed once it has no learners.</span></section>
+    </main></div>`;
+}
+
+/* ---- year end ---- */
+function YearEnd({ nav }) {
+  const db = app.db, s = app.school, plan = app.promotionPlan();
+  const [sure, setSure] = useState(''), [done, setDone] = useState(null);
+  const top = Math.max(...s.grades);
+  const exportJson = async () => { await saveFile('kat-' + db.schoolId + '-before-year-end-' + todayISO() + '.json', JSON.stringify(db, null, 1)); };
+  if (done) return html`<div class="app"><${WideBand} nav=${nav} title="New school year" sub=${s.name} /><main class="wide gut content" style="max-width:700px"><section class="card"><div class="boxnote ok"><span><strong>Done.</strong> ${done.up} learners moved up a grade and ${done.done} finished Grade ${top}.</span></div>
+    <span class="small">Next: check register teachers under Register classes, upload the new timetable, and ask teachers to upload their new subject class lists.</span><button class="btn line" onClick=${() => nav.replace('classes')}>Register classes</button></section></main></div>`;
+  return html`<div class="app"><${WideBand} nav=${nav} title="End of year" sub=${s.name + ' · move learners up a grade'} />
+    <main class="wide gut content" style="max-width:700px">
+      <section class="card"><span class="eyebrow">What will happen</span>
+        <span class="small">${plan.up.length} learners move up one grade into the class with the same letter (8A becomes 9A). ${plan.done.length} Grade ${top} learners are marked "Finished Grade ${top}" and drop off the class lists. All registers stay.</span>
+        ${plan.missing.size > 0 && html`<span class="small">New classes made for: ${[...plan.missing].join(', ')}.</span>`}
+        ${db.settings.promotedAt && html`<span class="tiny muted">Last done ${fmtShort(db.settings.promotedAt.slice(0, 10))} by ${staffName(db, db.settings.promotedBy)}.</span>`}
+        <div class="boxnote warn"><span>Do this once, after the last school day of the year. Learners who fail a grade can be moved back by hand under Learners. Download a backup first.</span></div>
+        <button class="btn line" onClick=${exportJson}>Download a backup first</button>
+        <label class="f" for="ye">To go ahead, type MOVE UP<input id="ye" class="inp" value=${sure} onInput=${(e) => setSure(e.target.value)} /></label>
+        <button class="btn big" disabled=${sure.trim().toUpperCase() !== 'MOVE UP'} onClick=${() => setDone(app.promoteYear())}>Move every learner up a grade</button></section>
+    </main></div>`;
+}
+
+/* ================= developer (KK Lekenyane): set up schools and their first admin ================= */
+function Developer() {
+  const [rows, setRows] = useState(null), [pick, setPick] = useState(null), [f, setF] = useState({ name: '', code: '', pw: '', sample: true }), [busy, setBusy] = useState(false), [msg, setMsg] = useState(''), [wipe, setWipe] = useState('');
+  const load = () => app.cloud.overview().then(setRows);
+  useEffect(() => { load(); }, []);
+  const info = (id) => (rows || []).find((r) => r.school_id === id) || { staff: 0, learners: 0, logins: 0, invites: 0 };
+  const go = async () => {
+    const sc = SCHOOLS.find((x) => x.id === pick), set = Number(info(pick).staff) > 0;
+    if (!f.code.trim() || (!set && !f.name.trim() && !f.sample)) { setMsg('Fill in the admin\'s name and symbol.'); return; }
+    if (f.pw.length < 6) { setMsg('The starting password needs at least 6 characters.'); return; }
+    setBusy(true); setMsg('');
+    let er;
+    if (set) { const r = await app.cloud.sb.rpc('set_start_password', { p_school: pick, p_code: f.code.trim().toUpperCase(), p_pw: f.pw }); er = r.error && r.error.message; }
+    else er = await app.cloud.setupSchool(pick, { name: f.name || f.code, code: f.code }, f.pw, f.sample);
+    setBusy(false);
+    if (er) { setMsg('Problem: ' + er); return; }
+    setMsg((set ? '' : sc.short + ' is set up. ') + f.code.toUpperCase() + ' can now sign in as Admin with the starting password, then chooses their own.');
+    setF({ name: '', code: '', pw: '', sample: true }); setPick(null); load();
+  };
+  return html`<div class="welcome">
+    <header class="band"><div class="col gut band-in"><div class="band-row"><div class="grow"><h1>Developer</h1><div class="sub">KAT · set up schools and their first admin</div></div><${Logo} s=${34} /></div></div></header>
+    <main class="col gut content">
+      ${SCHOOLS.map((sc) => { const r = info(sc.id), set = Number(r.staff) > 0; return html`<section class="card">
+        <div class="row"><img src=${sc.crest} alt="" style="width:40px;height:40px;object-fit:contain;background:#fff;border-radius:8px" /><span class="grow"><b>${sc.name}</b><br /><span class="tiny muted">${rows ? (set ? r.staff + ' staff · ' + r.learners + ' learners · ' + r.logins + ' signed up · ' + r.invites + ' waiting for first sign-in' : 'Not set up yet') : 'Checking…'}</span></span></div>
+        ${pick === sc.id ? html`<div class="stack">
+            ${!set && html`<label class="f" for="dn">First admin clerk's full name<input id="dn" class="inp" placeholder="e.g. Mrs E. Pretorius" value=${f.name} onInput=${(e) => setF(Object.assign({}, f, { name: e.target.value }))} /></label>`}
+            <div class="grid2"><label class="f" for="dc">${set ? 'Admin symbol (already on the staff list)' : 'Their symbol'}<input id="dc" class="inp" style="text-transform:uppercase" maxlength="5" value=${f.code} onInput=${(e) => setF(Object.assign({}, f, { code: e.target.value.toUpperCase().trim() }))} /></label>
+              <label class="f" for="dp">Starting password<input id="dp" class="inp" autocomplete="off" value=${f.pw} onInput=${(e) => setF(Object.assign({}, f, { pw: e.target.value }))} /></label></div>
+            ${!set && html`<label class="check"><input type="checkbox" checked=${f.sample} onChange=${(e) => setF(Object.assign({}, f, { sample: e.target.checked }))} /><span>Fill with made-up sample staff and learners (for testing)<br /><span class="tiny muted">Untick for a real school: it starts empty, and the admin adds staff and enrols learners.</span></span></label>`}
+            <div class="wrap"><button class="btn" disabled=${busy} onClick=${go}>${busy ? 'Working…' : set ? 'Give this starting password' : 'Set up ' + sc.short}</button><button class="btn soft" onClick=${() => { setPick(null); setMsg(''); }}>Cancel</button></div>
+            ${set && html`<details class="small"><summary>Wipe this school (testing only)</summary><div class="stack" style="margin-top:8px"><span class="small muted">Deletes every record and login of ${sc.short}. This cannot be undone.</span><label class="f" for="dw">Type ${sc.short} to confirm<input id="dw" class="inp" value=${wipe} onInput=${(e) => setWipe(e.target.value)} /></label><button class="btn danger" disabled=${wipe.trim() !== sc.short} onClick=${async () => { const er = await app.cloud.wipe(sc.id); setWipe(''); setMsg(er ? 'Problem: ' + er : sc.short + ' was wiped.'); load(); }}>Wipe ${sc.short}</button></div></details>`}</div>`
+          : html`<button class="btn line" onClick=${() => { setPick(sc.id); setMsg(''); setF({ name: '', code: '', pw: '', sample: !set }); }}>${set ? 'Give an admin a starting password' : 'Set up this school'}</button>`}
+      </section>`; })}
+      ${msg && html`<div class="boxnote info" role="status"><span>${msg}</span></div>`}
+      <button class="btn line" onClick=${async () => { await app.cloud.signOut(); app.emit(); }}>Sign out of the developer account</button>
+    </main><p class="credit">Developed by KK Lekenyane</p></div>`;
+}
 
 /* ===== KAT screens (Preact + htm) ===== */
 const { h, render } = preact;
@@ -1399,8 +1690,8 @@ function BottomNav({ nav, cur }) {
   const role = app.me.role;
   const items = role === 'teacher'
     ? [['home', 'Home', 'home'], ['register', 'Register', 'check'], ['incidents', 'Incidents', 'warn'], ['books', 'Books', 'book']]
-    : role === 'office' ? [['office', 'Today', 'grid'], ['capture', 'SA-SAMS', 'inbox'], ['records', 'Records', 'search'], ['settings', 'More', 'gear']]
-      : [['office', 'Today', 'grid'], ['records', 'Records', 'search'], ['admin', 'School', 'gear'], ['settings', 'More', 'user']];
+    : role === 'office' ? [['office', 'Today', 'grid'], ['capture', 'SA-SAMS', 'inbox'], ['records', 'Records', 'search'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']]
+      : [['office', 'Today', 'grid'], ['records', 'Records', 'search'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']];
   return html`<nav class="bnav" aria-label="Main"><div class=${'bnav-in ' + (role === 'teacher' ? 'col' : 'wide')}>${items.map(([r, label, ic]) => html`<button aria-current=${cur === r ? 'page' : null} onClick=${() => { if (r === 'register') { const c = app.me.registerClass; c ? nav.reset('register', { cls: c }) : nav.reset('cover'); } else nav.reset(r); }}><${Icon} n=${ic} />${label}</button>`)}</div></nav>`;
 }
 
@@ -1419,7 +1710,7 @@ function Welcome() {
   const db = app.db, s = app.school;
   const [who, setWho] = useState(null), [sym, setSym] = useState(''), [pw, setPw] = useState(''), [pw2, setPw2] = useState(''), [err, setErr] = useState(''), [tries, setTries] = useState(0), [waitTill, setWaitTill] = useState(0), [keep, setKeep] = useState(true);
   const findSym = (v) => db.staff.find((x) => (x.code || '').toUpperCase() === v.trim().toUpperCase());
-  const [cst, setCst] = useState(null), [busy, setBusy] = useState(false);
+  const [cst, setCst] = useState(null), [busy, setBusy] = useState(false), [startPw, setStartPw] = useState('');
   useEffect(() => {
     setCst(null); if (!onCloud() || sym.trim().length < 2) return;
     let live = true; const t = setTimeout(() => { app.cloud.status(sid, sym).then((v) => { if (live) setCst(v); }).catch(() => {}); }, 300);
@@ -1447,12 +1738,13 @@ function Welcome() {
     if (x1 && staffGroup(x1) !== grp) { setErr(x1.name + ' signs in as ' + ROLE_GROUPS.find((r) => r[0] === staffGroup(x1))[1] + '. Go back and choose that.'); return; }
     if (!sym.trim()) { setErr('Type your symbol.'); return; }
     if (!pw) { setErr('Type your password.'); return; }
-    const first = cst === 'free' || cst === 'new-school';
-    if (first) { if (pw.length < 6) { setErr('Choose a password of at least 6 characters.'); return; } if (pw !== pw2) { setErr('The two passwords are not the same.'); return; } }
+    const first = cst === 'invited';
+    if (first) { if (!startPw) { setErr('Type the starting password the admin gave you.'); return; } if (pw.length < 6) { setErr('Choose a password of at least 6 characters.'); return; } if (pw !== pw2) { setErr('The two new passwords are not the same.'); return; } }
     setBusy(true); setErr('');
-    const r = await app.cloud.signIn(sid, sym, pw, first ? pw2 : null);
+    const r = await app.cloud.signIn(sid, sym, pw, first ? startPw : null, pw2);
     setBusy(false);
-    if (r.first) { setCst('free'); setErr('First time: choose a password and type it twice.'); return; }
+    if (r.first) { setCst('invited'); setErr('First time: type the starting password from the admin, then choose your own.'); return; }
+    if (r.err === 'wrong-start') { const t = tries + 1; setTries(t); if (t >= 5) { setWaitTill(Date.now() + 30000); setTries(0); } setErr('That starting password is wrong. Check it with the admin.'); return; }
     if (r.err === 'wrong') { const t = tries + 1; setTries(t); if (t >= 5) { setWaitTill(Date.now() + 30000); setTries(0); } setErr(t >= 5 ? 'Wrong password five times. Wait 30 seconds, or ask an admin to reset it.' : 'Wrong password. Try again.'); return; }
     if (r.err) { setErr(r.err); return; }
     const sid2 = app.cloud.member.school_id, x = app.db.staff.find((y) => (y.code || '').toUpperCase() === r.code);
@@ -1485,8 +1777,17 @@ function Welcome() {
       <div class="boxnote warn"><span><strong>Test version.</strong> Every learner and mark here is made up.</span></div>
       <details class="small muted"><summary>Change school</summary><div class="wrap" style="margin-top:8px">${SCHOOLS.map((x) => { const st = (LS.get('teng:data:' + x.id) || {}).settings || {}; return html`<button class="schoolpick" aria-pressed=${String(sid === x.id)} onClick=${() => setSid(x.id)}><img src=${st.crest || x.crest} alt="" /><span class="grow"><b>${st.name || x.name}</b><br /><span class="tiny muted">${x.id === 'ficksburg' ? 'Pilot school' : 'Shows each school has its own data'}</span></span></button>`; })}</div></details>
     </main>
-    ${credit}
+    ${credit}${app.cloud && html`<p class="credit" style="margin-top:-6px"><button class="linkbtn tiny" onClick=${() => { setStep('dev'); setPw(''); setPw2(''); setErr(''); setCst(null); app.cloud.devExists().then((x) => setCst(x ? 'claimed' : 'invited')).catch(() => setErr('Could not reach the database.')); }}>Developer sign-in</button></p>`}
   </div>`;
+
+  if (step === 'dev') return html`<div class="welcome">
+    <header class="band"><div class="col gut band-in"><div class="band-row"><button class="iconbtn back" aria-label="Back" onClick=${() => setStep('open')}><${Icon} n="back" /></button><div class="grow"><h1>Developer sign-in</h1><div class="sub">Sets up schools and their first admin</div></div><${Logo} s=${34} /></div></div></header>
+    <main class="col gut content"><form class="card" onSubmit=${async (e) => { e.preventDefault(); if (Date.now() < waitTill) { setErr('Too many wrong tries. Wait a few seconds.'); return; } setBusy(true); setErr(''); const r = await app.cloud.devSignIn(pw, cst === 'invited' ? pw2 : null); setBusy(false); if (r.first) { setCst('invited'); return; } if (r.err === 'wrong') { const t = tries + 1; setTries(t); if (t >= 5) { setWaitTill(Date.now() + 30000); setTries(0); } setErr('Wrong password.'); return; } if (r.err) { setErr(r.err); return; } app.emit(); }}>
+      ${cst === 'invited' && html`<div class="boxnote info"><span><strong>No developer yet.</strong> Choose the developer password now. Only the first person to do this becomes the developer, so do it straight away.</span></div>`}
+      <label class="f" for="wpw">Developer password<input id="wpw" type="password" class="inp" autocomplete=${cst === 'invited' ? 'new-password' : 'current-password'} value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>
+      ${cst === 'invited' && html`<label class="f" for="wpw2">Type it again<input id="wpw2" type="password" class="inp" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /></label>`}
+      ${err && html`<span class="small" role="alert" style="color:var(--abs-ink);font-weight:600">${err}</span>`}
+      <button class="btn big" type="submit" disabled=${busy || !cst}>${busy ? 'Signing in…' : 'Sign in'}</button></form></main>${credit}</div>`;
 
   if (step === 'role') return html`<div class="welcome">
     <header class="band"><div class="col gut band-in"><div class="band-row"><button class="iconbtn back" aria-label="Back" onClick=${() => setStep('open')}><${Icon} n="back" /></button><div class="grow"><h1>Who are you?</h1><div class="sub">${s.name}</div></div><${Logo} s=${34} /></div></div></header>
@@ -1505,7 +1806,13 @@ function Welcome() {
       <form class="card" onSubmit=${login}>
         <label class="f" for="wsym">Your symbol<input id="wsym" class="inp" autocomplete="username" style="text-transform:uppercase" placeholder="e.g. LK" value=${sym} onInput=${(e) => { setSym(e.target.value.toUpperCase()); setWho(null); setErr(''); }} /></label>
         ${x0 && html`<span class="small muted">${x0.name} · ${x0.title}</span>`}
-        ${(onCloud() ? cst === 'free' || cst === 'new-school' : x0 && !x0.pw) ? html`<div class="boxnote info"><span><strong>First time?</strong> Choose your own password. Nobody else, not even the office, can see it.</span></div>
+        ${onCloud() && cst === 'invited' ? html`<div class="boxnote info"><span><strong>First time?</strong> Type the starting password the admin gave you, then choose your own. Nobody else, not even the office, can see yours.</span></div>
+          <label class="f" for="wst">Starting password from the admin<input id="wst" type="password" class="inp" autocomplete="off" value=${startPw} onInput=${(e) => setStartPw(e.target.value)} /></label>
+          <label class="f" for="wpw">Your new password<input id="wpw" type="password" class="inp" autocomplete="new-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>
+          <label class="f" for="wpw2">Type it again<input id="wpw2" type="password" class="inp" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /></label>`
+        : onCloud() && cst === 'free' ? html`<div class="boxnote warn"><span>${sym} has no starting password yet. Ask the admin to give you one.</span></div>`
+        : onCloud() && cst === 'no-school' ? html`<div class="boxnote warn"><span>${s.short || s.name} is not set up in KAT yet.</span></div>`
+        : (!onCloud() && x0 && !x0.pw) ? html`<div class="boxnote info"><span><strong>First time?</strong> Choose your own password. Nobody else, not even the office, can see it.</span></div>
           <label class="f" for="wpw">New password<input id="wpw" type="password" class="inp" autocomplete="new-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>
           <label class="f" for="wpw2">Type it again<input id="wpw2" type="password" class="inp" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /></label>` : html`<label class="f" for="wpw">Password<input id="wpw" type="password" class="inp" autocomplete="current-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>`}
         <label class="check"><input type="checkbox" checked=${keep} onChange=${(e) => setKeep(e.target.checked)} /><span>Remember me on this phone<br /><span class="tiny muted">Next time KAT opens straight away, no password. Untick on a shared phone.</span></span></label>
@@ -2202,7 +2509,7 @@ function Records({ nav }) {
 function Admin({ nav }) {
   const db = app.db, s = app.school;
   const [f, setF] = useState(() => ({ name: s.name, local: s.local || '', short: s.short, motto: s.motto || '', assembly: s.assembly, primary: s.colors.primary, accent: s.colors.accent, red: s.colors.red, reasons: app.reasonsList.join('\n'), bells: app.bells.map((b) => 'P' + b.p + ' ' + b.t + '-' + b.e).join('\n'), terms: cal(s).terms.map((t) => 'Term ' + t.n + ' ' + t.from + ' ' + t.to).join('\n'), holidays: cal(s).holidays.join('\n') }));
-  const [edit, setEdit] = useState(null), [confirmReset, setConfirmReset] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
   const set = (k) => (e) => setF(Object.assign({}, f, { [k]: e.target.value }));
   const save = () => {
     const bells = f.bells.split('\n').map((x) => x.match(/P?(\d+)\s+(\d\d:\d\d)\s*-\s*(\d\d:\d\d)/)).filter(Boolean).map((m) => ({ p: Number(m[1]), t: m[2], e: m[3] }));
@@ -2213,7 +2520,7 @@ function Admin({ nav }) {
   };
   const onCrest = (e) => { const file = e.target.files[0]; if (!file) return; const fr = new FileReader(); fr.onload = () => { app.updateSettings({ crest: fr.result }); app.toast('Crest updated.'); }; fr.readAsDataURL(file); };
   const exportJson = async () => { await saveFile('teng-' + db.schoolId + '-' + todayISO() + '.json', JSON.stringify(db, null, 1)); };
-  return html`<div class="app"><${WideBand} nav=${nav} noBack=${true} title="School settings" sub=${s.name + ' · only admins see this page'} />
+  return html`<div class="app"><${WideBand} nav=${nav} title="School settings" sub=${s.name + ' · name, crest, colours, reasons, calendar'} />
     <main class="wide gut content" style="max-width:900px">
       <section class="card"><span class="eyebrow">School</span>
         <div class="grid2" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
@@ -2238,24 +2545,10 @@ function Admin({ nav }) {
         <span class="small muted">Term dates are filled in from the 2026 public school calendar. Please check them.</span>
       </section>
       <button class="btn big" onClick=${save}>Save school settings</button>
-      <section class="card"><span class="eyebrow">Timetable</span><span class="small muted">Upload the school's teacher timetable PDF (from aSc Timetables). Every teacher gets their lessons under "Period register", and the bell times update. The office can do this too.</span><button class="btn line" onClick=${() => nav.go('timetable', { mode: 'school' })}><${Icon} n="grid" s=${18} />Upload school timetable</button></section>
-      <section class="card"><div class="between"><span class="eyebrow">Staff · ${db.staff.length}</span><button class="btn sm line" onClick=${() => setEdit({ name: '', code: '', short: '', title: 'Teacher', role: 'teacher', registerClass: '', dhGrade: null })}>+ Add a person</button></div>
-        <div class="tablebox" style="max-height:420px;overflow:auto"><table class="t"><thead><tr><th>Symbol</th><th>Name</th><th>Role</th><th>Register class</th><th></th></tr></thead><tbody>
-          ${db.staff.map((p) => html`<tr><td><b>${p.code || ''}</b></td><td><b>${p.name}</b><br /><span class="tiny muted">${p.title}</span></td><td>${(ROLE_GROUPS.find((r) => r[0] === staffGroup(p)) || [])[1]}</td><td>${p.registerClass || ''}</td><td><button class="btn sm soft" onClick=${() => setEdit(Object.assign({}, p))}>Edit</button></td></tr>`)}</tbody></table></div></section>
       <section class="card"><span class="eyebrow">Data</span>
         <span class="small muted">${Object.keys(db.learners).length} learners · ${db.classes.length} register classes · ${db.groups.length} subject classes · ${Object.keys(db.registers).length} registers stored. This school's data is kept apart from every other school.</span>
         <div class="wrap"><button class="btn line" onClick=${exportJson}>Download all data (JSON)</button>${app.cloud ? null : confirmReset ? html`<button class="btn danger" onClick=${() => { app.resetSample(); setConfirmReset(false); app.toast('Sample data reset.'); }}>Yes, reset everything</button><button class="btn soft" onClick=${() => setConfirmReset(false)}>Cancel</button>` : html`<button class="btn soft" onClick=${() => setConfirmReset(true)}>Reset sample data</button>`}</div></section>
     </main>
-    ${edit && html`<${Sheet} title=${edit.id ? 'Edit ' + edit.name : 'Add a person'} onClose=${() => setEdit(null)}>
-      <label class="f" for="pn">Full name<input id="pn" class="inp" value=${edit.name} onInput=${(e) => setEdit(Object.assign({}, edit, { name: e.target.value }))} /></label>
-      <label class="f" for="psy">Symbol (as on the timetable, e.g. LK)<input id="psy" class="inp" maxlength="5" style="text-transform:uppercase" value=${edit.code || ''} onInput=${(e) => setEdit(Object.assign({}, edit, { code: e.target.value.toUpperCase().trim() }))} /></label>
-      <label class="f" for="pt">Job title<input id="pt" class="inp" value=${edit.title} onInput=${(e) => setEdit(Object.assign({}, edit, { title: e.target.value }))} /></label>
-      <div class="grid2"><label class="f" for="pr">Signs in as<select id="pr" class="inp" value=${staffGroup(edit)} onChange=${(e) => setEdit(Object.assign({}, edit, groupFields(e.target.value)))}>${ROLE_GROUPS.map(([k, l]) => html`<option value=${k}>${l}</option>`)}</select></label>
-        <label class="f" for="pc">Register class<select id="pc" class="inp" value=${edit.registerClass || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { registerClass: e.target.value || null }))}><option value="">None</option>${db.classes.map((c) => html`<option>${c.id}</option>`)}</select></label>
-        <label class="f" for="pd">Head of department for<select id="pd" class="inp" value=${edit.dhGrade || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { dhGrade: e.target.value ? Number(e.target.value) : null }))}><option value="">No grade</option>${s.grades.map((g) => html`<option value=${g}>Grade ${g}</option>`)}</select></label></div>
-      ${edit.id && (app.cloud ? html`<div class="between"><span class="small muted">If ${edit.short || edit.name} forgot their password, reset it. They choose a new one at the next sign-in.</span><button class="btn sm soft" onClick=${async () => { if (app.offline) { app.toast('Resetting a password needs signal.'); return; } const er = await app.cloud.resetSymbol(edit.code); if (er) { app.toast(er); return; } app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button></div>` : html`<div class="between"><span class="small muted">${edit.pw ? 'Has a password.' : 'No password yet. They choose one the first time they sign in.'}</span>${edit.pw && html`<button class="btn sm soft" onClick=${() => { app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button>`}</div>`)}
-      <button class="btn big" onClick=${() => { if (!edit.name.trim()) return; const sc = edit.code || symbolGuess(edit.name); const clash = db.staff.find((o) => o.id !== edit.id && o.code === sc); if (clash) { app.toast('The symbol ' + sc + ' is already used by ' + clash.name + '. Choose another.'); return; } app.saveStaff(Object.assign({}, edit, { short: edit.short || edit.name, code: edit.code || symbolGuess(edit.name) })); setEdit(null); app.toast('Saved.'); }}>Save</button>
-    <//>`}
     <${BottomNav} nav=${nav} cur="admin" /></div>`;
 }
 
@@ -2436,7 +2729,7 @@ function Timetable({ nav, mode }) {
 }
 
 /* ================= router ================= */
-const SCREENS = { home: Home, register: Register, cover: Cover, period: Period, reasons: Reasons, upload: Upload, incidents: Incidents, 'incident-new': IncidentNew, books: Books, 'book-new': BookNew, book: Book, find: Find, learner: Learner, print: PrintLists, office: Office, capture: Capture, records: Records, admin: Admin, settings: Settings, timetable: Timetable, missed: Missed, times: Times };
+const SCREENS = { home: Home, register: Register, cover: Cover, period: Period, reasons: Reasons, upload: Upload, incidents: Incidents, 'incident-new': IncidentNew, books: Books, 'book-new': BookNew, book: Book, find: Find, learner: Learner, print: PrintLists, office: Office, capture: Capture, records: Records, admin: AdminHub, schoolset: Admin, staff: Staff, learners: Learners, classes: Classes, yearend: YearEnd, settings: Settings, timetable: Timetable, missed: Missed, times: Times };
 function Root() {
   const [, force] = useState(0);
   useEffect(() => app.subscribe(() => force((x) => x + 1)), []);
@@ -2447,6 +2740,7 @@ function Root() {
   const lastSig = useRef(sig);
   useEffect(() => { if (lastSig.current !== sig) { lastSig.current = sig; setStack([]); } }, [sig]);
   useEffect(() => { const c = app.db ? app.school.colors : SCHOOLS[0].colors; const r = document.documentElement.style; r.setProperty('--primary', c.primary); r.setProperty('--accent', c.accent); r.setProperty('--red', c.red); });
+  if (app.cloud && app.cloud.dev) return html`<${Developer} /><${Toast} />`;
   if (!me) return html`<${Welcome} /><${Toast} />`;
   const cur = stack.length ? stack[stack.length - 1] : { name: start, params: {} };
   const nav = {

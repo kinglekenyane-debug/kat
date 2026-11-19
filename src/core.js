@@ -1,5 +1,5 @@
 /* ===== KAT core: school configuration, dates, sample data and the data store ===== */
-const TENG_VERSION = '0.5 test';
+const TENG_VERSION = '0.6 test';
 const DATA_VERSION = 7;
 
 /* ---- Schools. Each school has its own data space, name, crest and colours. ---- */
@@ -432,6 +432,37 @@ class Store {
     if (person.registerClass) { const c = this.db.classes.find((x) => x.id === person.registerClass); if (c) { const old = this.db.staff.find((s) => s.id === c.teacherId && s.id !== person.id); if (old) old.registerClass = null; c.teacherId = person.id; } }
     this.commit();
   }
+  // learners and classes (admin)
+  saveLearner(l, oldAcc) {
+    if (oldAcc && oldAcc !== l.acc) { delete this.db.learners[oldAcc]; this.db.groups.forEach((g) => { g.learners = g.learners.map((a) => (a === oldAcc ? l.acc : a)); }); }
+    this.db.learners[l.acc] = Object.assign({ gender: '', dob: '', regDate: todayISO(), archiveDate: null, cls: null }, this.db.learners[l.acc] || {}, l); this.commit();
+  }
+  // a learner who leaves keeps their old registers (the circuit manager may ask); they just drop off every class list
+  archiveLearner(acc, reason) { const l = this.db.learners[acc]; if (!l) return; l.archiveDate = reason ? todayISO() : null; l.archiveReason = reason || null; if (reason) { l.lastCls = l.cls || l.lastCls || null; l.cls = null; this.db.groups.forEach((g) => { g.learners = g.learners.filter((x) => x !== acc); }); } else if (!l.cls && l.lastCls) l.cls = l.lastCls; this.commit(); }
+  enrolClass(cls, list) {
+    let added = 0, moved = 0;
+    list.forEach((x) => { const ex = this.db.learners[x.acc]; if (!ex) { this.db.learners[x.acc] = { acc: x.acc, surname: x.surname, first: x.first, gender: x.gender || '', dob: x.dob || '', regDate: todayISO(), archiveDate: null, cls }; added++; } else if (ex.cls !== cls || ex.archiveDate) { ex.cls = cls; ex.archiveDate = null; ex.archiveReason = null; moved++; } });
+    this.commit(); return { added, moved };
+  }
+  addClass(id, grade) { if (this.db.classes.find((c) => c.id === id)) return false; this.db.classes.push({ id, grade, teacherId: null }); this.db.classes.sort((a, b) => a.grade - b.grade || a.id.localeCompare(b.id)); this.commit(); return true; }
+  removeClass(id) { if (classLearners(this.db, id).length) return false; const c = this.db.classes.find((x) => x.id === id); if (c && c.teacherId) { const t = this.db.staff.find((x) => x.id === c.teacherId); if (t) t.registerClass = null; } this.db.classes = this.db.classes.filter((x) => x.id !== id); this.commit(); return true; }
+  setClassTeacher(id, uid) { const t = this.db.staff.find((x) => x.id === uid); if (t) { this.saveStaff(Object.assign({}, t, { registerClass: id })); return; } const c = this.db.classes.find((x) => x.id === id); if (c && c.teacherId) { const o = this.db.staff.find((x) => x.id === c.teacherId); if (o) o.registerClass = null; c.teacherId = null; } this.commit(); }
+  // year end: every learner moves up one grade into the class with the same letter; Grade 12 finishes school
+  promotionPlan() {
+    const top = Math.max(...this.school.grades); const plan = { up: [], done: [], missing: new Set() };
+    Object.values(this.db.learners).forEach((l) => { if (l.archiveDate || !l.cls) return; const c = this.db.classes.find((x) => x.id === l.cls); if (!c) return;
+      if (c.grade >= top) { plan.done.push(l.acc); return; }
+      const to = (c.grade + 1) + l.cls.slice(String(c.grade).length); if (!this.db.classes.find((x) => x.id === to)) plan.missing.add(to); plan.up.push([l.acc, to]); });
+    return plan;
+  }
+  promoteYear() {
+    const plan = this.promotionPlan(); plan.missing.forEach((id) => this.db.classes.push({ id, grade: parseInt(id, 10), teacherId: null }));
+    plan.up.forEach(([a, to]) => { this.db.learners[a].cls = to; });
+    plan.done.forEach((a) => { const l = this.db.learners[a]; l.lastCls = l.cls; l.cls = null; l.archiveDate = todayISO(); l.archiveReason = 'Finished Grade 12'; });
+    this.db.settings = Object.assign({}, this.db.settings, { promotedAt: stamp(), promotedBy: this.session.userId });
+    this.commit(); return { up: plan.up.length, done: plan.done.length };
+  }
+  removeStaff(uid) { const p = this.db.staff.find((x) => x.id === uid); if (!p) return; this.db.classes.forEach((c) => { if (c.teacherId === uid) c.teacherId = null; }); this.db.groups.forEach((g) => { if (g.teacherId === uid) g.teacherId = null; }); this.db.staff = this.db.staff.filter((x) => x.id !== uid); this.commit(); }
   resetSample() { const id = this.db.schoolId; LS.del(this.key(id)); delete MEM[id]; this.db = generateSample(SCHOOLS.find((s) => s.id === id), todayISO()); this.commit(); }
 }
 
