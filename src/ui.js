@@ -3,6 +3,8 @@ const { h, render } = preact;
 const { useState, useEffect, useMemo, useRef } = preactHooks;
 const html = htm.bind(h);
 const app = new Store();
+if (typeof cloud !== 'undefined') cloud.attach(app);
+const onCloud = () => !!(app.cloud && !app.offline);
 
 /* ---- icons ---- */
 const P = {
@@ -101,11 +103,18 @@ function Welcome() {
   const db = app.db, s = app.school;
   const [who, setWho] = useState(null), [sym, setSym] = useState(''), [pw, setPw] = useState(''), [pw2, setPw2] = useState(''), [err, setErr] = useState(''), [tries, setTries] = useState(0), [waitTill, setWaitTill] = useState(0), [keep, setKeep] = useState(true);
   const findSym = (v) => db.staff.find((x) => (x.code || '').toUpperCase() === v.trim().toUpperCase());
+  const [cst, setCst] = useState(null), [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setCst(null); if (!onCloud() || sym.trim().length < 2) return;
+    let live = true; const t = setTimeout(() => { app.cloud.status(sid, sym).then((v) => { if (live) setCst(v); }).catch(() => {}); }, 300);
+    return () => { live = false; clearTimeout(t); };
+  }, [sym, sid]);
   const remembered = app.rememberedUsers();
   const choose = (x) => { setWho(x); setSym(x.code || ''); setPw(''); setPw2(''); setErr(''); setTimeout(() => { const el = document.getElementById('wpw'); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.focus(); } }, 50); };
   const finish = async (x) => { if (keep) await app.remember(x.id); else app.forget(x.id); app.signIn(sid, x.id, keep); };
   const login = async (e) => {
     e && e.preventDefault();
+    if (onCloud()) return cloudLogin();
     const x = who || findSym(sym); if (!x) { setErr('No staff member has the symbol "' + sym + '". Check with the office.'); return; }
     if (staffGroup(x) !== grp) { setErr(x.name + ' signs in as ' + ROLE_GROUPS.find((r) => r[0] === staffGroup(x))[1] + '. Go back and choose that.'); return; }
     if (!who) setWho(x);
@@ -114,6 +123,32 @@ function Welcome() {
     if (await app.checkPassword(x.id, pw)) { await finish(x); return; }
     const t = tries + 1; setTries(t); if (t >= 5) { setWaitTill(Date.now() + 30000); setTries(0); }
     setErr(t >= 5 ? 'Wrong password five times. Wait 30 seconds, or ask an admin to reset it.' : 'Wrong password. Try again.');
+  };
+  // with the shared database: the login lives on the school's database, so any phone works
+  const cloudLogin = async () => {
+    if (Date.now() < waitTill) { setErr('Too many wrong tries. Wait a few seconds and try again.'); return; }
+    const x1 = who || findSym(sym);
+    if (x1 && staffGroup(x1) !== grp) { setErr(x1.name + ' signs in as ' + ROLE_GROUPS.find((r) => r[0] === staffGroup(x1))[1] + '. Go back and choose that.'); return; }
+    if (!sym.trim()) { setErr('Type your symbol.'); return; }
+    if (!pw) { setErr('Type your password.'); return; }
+    const first = cst === 'free' || cst === 'new-school';
+    if (first) { if (pw.length < 6) { setErr('Choose a password of at least 6 characters.'); return; } if (pw !== pw2) { setErr('The two passwords are not the same.'); return; } }
+    setBusy(true); setErr('');
+    const r = await app.cloud.signIn(sid, sym, pw, first ? pw2 : null);
+    setBusy(false);
+    if (r.first) { setCst('free'); setErr('First time: choose a password and type it twice.'); return; }
+    if (r.err === 'wrong') { const t = tries + 1; setTries(t); if (t >= 5) { setWaitTill(Date.now() + 30000); setTries(0); } setErr(t >= 5 ? 'Wrong password five times. Wait 30 seconds, or ask an admin to reset it.' : 'Wrong password. Try again.'); return; }
+    if (r.err) { setErr(r.err); return; }
+    const sid2 = app.cloud.member.school_id, x = app.db.staff.find((y) => (y.code || '').toUpperCase() === r.code);
+    if (!x) { setErr('Signed in, but ' + r.code + ' is not on the staff list. Ask the office.'); return; }
+    await app.setPassword(x.id, pw);
+    if (keep) await app.remember(x.id); else app.forget(x.id);
+    app.signIn(sid2, x.id, keep);
+  };
+  const cont = (x) => {
+    const c = app.cloud;
+    if (c && !app.offline && !(c.user && c.user.email === c.email(sid, x.code))) { setGrp(staffGroup(x)); setStep('signin'); choose(x); setErr('Type your password once to connect this phone to the school database.'); return; }
+    app.signIn(sid, x.id);
   };
   const roleLine = (x) => (x.code ? x.code + ' · ' : '') + x.title + (x.registerClass ? ' · register class ' + x.registerClass : '');
   const person = (x) => html`<button class="person" onClick=${() => choose(x)}><span class="avatar">${x.code || initials(x.name)}</span><span class="grow"><b>${x.name}</b><br /><span class="tiny muted">${roleLine(x)}</span></span></button>`;
@@ -129,7 +164,7 @@ function Welcome() {
       <div class="small" style="opacity:.9">${s.name}${s.local ? ' · ' + s.local : ''}</div>
     </div></div>
     <main class="col gut content">
-      ${remembered.length > 0 && html`<section class="stack"><span class="eyebrow">Welcome back</span>${remembered.map((x) => html`<button class="person" onClick=${() => app.signIn(sid, x.id)}><span class="avatar">${x.code || initials(x.name)}</span><span class="grow"><b>Continue as ${x.short || x.name}</b><br /><span class="tiny muted">Remembered on this phone</span></span><${Icon} n="chev" s=${18} /></button>`)}</section>`}
+      ${remembered.length > 0 && html`<section class="stack"><span class="eyebrow">Welcome back</span>${remembered.map((x) => html`<button class="person" onClick=${() => cont(x)}><span class="avatar">${x.code || initials(x.name)}</span><span class="grow"><b>Continue as ${x.short || x.name}</b><br /><span class="tiny muted">Remembered on this phone</span></span><${Icon} n="chev" s=${18} /></button>`)}</section>`}
       <button class="btn big" onClick=${() => setStep('role')}>${remembered.length ? 'Sign in as someone else' : 'Get started'}</button>
       <div class="boxnote warn"><span><strong>Test version.</strong> Every learner and mark here is made up.</span></div>
       <details class="small muted"><summary>Change school</summary><div class="wrap" style="margin-top:8px">${SCHOOLS.map((x) => { const st = (LS.get('teng:data:' + x.id) || {}).settings || {}; return html`<button class="schoolpick" aria-pressed=${String(sid === x.id)} onClick=${() => setSid(x.id)}><img src=${st.crest || x.crest} alt="" /><span class="grow"><b>${st.name || x.name}</b><br /><span class="tiny muted">${x.id === 'ficksburg' ? 'Pilot school' : 'Shows each school has its own data'}</span></span></button>`; })}</div></details>
@@ -154,12 +189,13 @@ function Welcome() {
       <form class="card" onSubmit=${login}>
         <label class="f" for="wsym">Your symbol<input id="wsym" class="inp" autocomplete="username" style="text-transform:uppercase" placeholder="e.g. LK" value=${sym} onInput=${(e) => { setSym(e.target.value.toUpperCase()); setWho(null); setErr(''); }} /></label>
         ${x0 && html`<span class="small muted">${x0.name} · ${x0.title}</span>`}
-        ${x0 && !x0.pw ? html`<div class="boxnote info"><span><strong>First time?</strong> Choose your own password. Nobody else, not even the office, can see it.</span></div>
+        ${(onCloud() ? cst === 'free' || cst === 'new-school' : x0 && !x0.pw) ? html`<div class="boxnote info"><span><strong>First time?</strong> Choose your own password. Nobody else, not even the office, can see it.</span></div>
           <label class="f" for="wpw">New password<input id="wpw" type="password" class="inp" autocomplete="new-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>
           <label class="f" for="wpw2">Type it again<input id="wpw2" type="password" class="inp" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /></label>` : html`<label class="f" for="wpw">Password<input id="wpw" type="password" class="inp" autocomplete="current-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>`}
         <label class="check"><input type="checkbox" checked=${keep} onChange=${(e) => setKeep(e.target.checked)} /><span>Remember me on this phone<br /><span class="tiny muted">Next time KAT opens straight away, no password. Untick on a shared phone.</span></span></label>
         ${err && html`<span class="small" role="alert" style="color:var(--abs-ink);font-weight:600">${err}</span>`}
-        <button class="btn big" type="submit">Sign in</button>
+        ${onCloud() && cst === 'unknown' && html`<span class="small muted">No one at ${s.short || s.name} has the symbol ${sym}.</span>`}
+        <button class="btn big" type="submit" disabled=${busy}>${busy ? 'Signing in…' : 'Sign in'}</button>
         <span class="tiny muted">Forgot your password? An admin can reset it, then you choose a new one.</span>
       </form>
       ${people.length > 0 && html`<section class="stack"><span class="eyebrow">Test shortcut</span>
@@ -892,7 +928,7 @@ function Admin({ nav }) {
           ${db.staff.map((p) => html`<tr><td><b>${p.code || ''}</b></td><td><b>${p.name}</b><br /><span class="tiny muted">${p.title}</span></td><td>${(ROLE_GROUPS.find((r) => r[0] === staffGroup(p)) || [])[1]}</td><td>${p.registerClass || ''}</td><td><button class="btn sm soft" onClick=${() => setEdit(Object.assign({}, p))}>Edit</button></td></tr>`)}</tbody></table></div></section>
       <section class="card"><span class="eyebrow">Data</span>
         <span class="small muted">${Object.keys(db.learners).length} learners · ${db.classes.length} register classes · ${db.groups.length} subject classes · ${Object.keys(db.registers).length} registers stored. This school's data is kept apart from every other school.</span>
-        <div class="wrap"><button class="btn line" onClick=${exportJson}>Download all data (JSON)</button>${confirmReset ? html`<button class="btn danger" onClick=${() => { app.resetSample(); setConfirmReset(false); app.toast('Sample data reset.'); }}>Yes, reset everything</button><button class="btn soft" onClick=${() => setConfirmReset(false)}>Cancel</button>` : html`<button class="btn soft" onClick=${() => setConfirmReset(true)}>Reset sample data</button>`}</div></section>
+        <div class="wrap"><button class="btn line" onClick=${exportJson}>Download all data (JSON)</button>${app.cloud ? null : confirmReset ? html`<button class="btn danger" onClick=${() => { app.resetSample(); setConfirmReset(false); app.toast('Sample data reset.'); }}>Yes, reset everything</button><button class="btn soft" onClick=${() => setConfirmReset(false)}>Cancel</button>` : html`<button class="btn soft" onClick=${() => setConfirmReset(true)}>Reset sample data</button>`}</div></section>
     </main>
     ${edit && html`<${Sheet} title=${edit.id ? 'Edit ' + edit.name : 'Add a person'} onClose=${() => setEdit(null)}>
       <label class="f" for="pn">Full name<input id="pn" class="inp" value=${edit.name} onInput=${(e) => setEdit(Object.assign({}, edit, { name: e.target.value }))} /></label>
@@ -901,7 +937,7 @@ function Admin({ nav }) {
       <div class="grid2"><label class="f" for="pr">Signs in as<select id="pr" class="inp" value=${staffGroup(edit)} onChange=${(e) => setEdit(Object.assign({}, edit, groupFields(e.target.value)))}>${ROLE_GROUPS.map(([k, l]) => html`<option value=${k}>${l}</option>`)}</select></label>
         <label class="f" for="pc">Register class<select id="pc" class="inp" value=${edit.registerClass || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { registerClass: e.target.value || null }))}><option value="">None</option>${db.classes.map((c) => html`<option>${c.id}</option>`)}</select></label>
         <label class="f" for="pd">Head of department for<select id="pd" class="inp" value=${edit.dhGrade || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { dhGrade: e.target.value ? Number(e.target.value) : null }))}><option value="">No grade</option>${s.grades.map((g) => html`<option value=${g}>Grade ${g}</option>`)}</select></label></div>
-      ${edit.id && html`<div class="between"><span class="small muted">${edit.pw ? 'Has a password.' : 'No password yet. They choose one the first time they sign in.'}</span>${edit.pw && html`<button class="btn sm soft" onClick=${() => { app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button>`}</div>`}
+      ${edit.id && (app.cloud ? html`<div class="between"><span class="small muted">If ${edit.short || edit.name} forgot their password, reset it. They choose a new one at the next sign-in.</span><button class="btn sm soft" onClick=${async () => { if (app.offline) { app.toast('Resetting a password needs signal.'); return; } const er = await app.cloud.resetSymbol(edit.code); if (er) { app.toast(er); return; } app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button></div>` : html`<div class="between"><span class="small muted">${edit.pw ? 'Has a password.' : 'No password yet. They choose one the first time they sign in.'}</span>${edit.pw && html`<button class="btn sm soft" onClick=${() => { app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button>`}</div>`)}
       <button class="btn big" onClick=${() => { if (!edit.name.trim()) return; const sc = edit.code || symbolGuess(edit.name); const clash = db.staff.find((o) => o.id !== edit.id && o.code === sc); if (clash) { app.toast('The symbol ' + sc + ' is already used by ' + clash.name + '. Choose another.'); return; } app.saveStaff(Object.assign({}, edit, { short: edit.short || edit.name, code: edit.code || symbolGuess(edit.name) })); setEdit(null); app.toast('Saved.'); }}>Save</button>
     <//>`}
     <${BottomNav} nav=${nav} cur="admin" /></div>`;
@@ -909,7 +945,7 @@ function Admin({ nav }) {
 
 function ChangePw() {
   const [o, setO] = useState(''), [n, setN] = useState(''), [n2, setN2] = useState(''), [msg, setMsg] = useState('');
-  const go = async (e) => { e.preventDefault(); if (!(await app.checkPassword(app.me.id, o))) { setMsg('Your current password is wrong.'); return; } if (n.length < 6) { setMsg('Use at least 6 characters.'); return; } if (n !== n2) { setMsg('The new passwords are not the same.'); return; } await app.setPassword(app.me.id, n); setO(''); setN(''); setN2(''); setMsg(''); app.toast('Password changed.'); };
+  const go = async (e) => { e.preventDefault(); if (!(await app.checkPassword(app.me.id, o))) { setMsg('Your current password is wrong.'); return; } if (n.length < 6) { setMsg('Use at least 6 characters.'); return; } if (n !== n2) { setMsg('The new passwords are not the same.'); return; } if (app.cloud) { if (app.offline) { setMsg('Changing your password needs signal.'); return; } const er = await app.cloud.changePassword(n); if (er) { setMsg(er); return; } } await app.setPassword(app.me.id, n); setO(''); setN(''); setN2(''); setMsg(''); app.toast('Password changed.'); };
   return html`<form class="card" onSubmit=${go}><span class="eyebrow">Change my password</span>
     <label class="f" for="cpo">Current password<input id="cpo" type="password" class="inp" autocomplete="current-password" value=${o} onInput=${(e) => setO(e.target.value)} /></label>
     <label class="f" for="cpn">New password<input id="cpn" type="password" class="inp" autocomplete="new-password" value=${n} onInput=${(e) => setN(e.target.value)} /></label>
@@ -947,8 +983,12 @@ function Settings({ nav }) {
   return html`<div class="app"><${Band} nav=${nav} noBack=${me.role !== 'teacher'} title="You and this phone" sub=${app.school.name} />
     <main class="col gut content">
       <section class="card"><div class="row"><span class="avatar">${initials(me.name)}</span><span class="grow"><b>${me.name}</b><br /><span class="small muted">${me.code ? 'Symbol ' + me.code + ' · ' : ''}${me.title}${me.registerClass ? ' · register class ' + me.registerClass : ''}</span></span></div>
-        <button class="btn line" onClick=${() => { app.signOut(); }}><${Icon} n="swap" s=${18} />Sign out</button>${app.isRemembered(me.id) && html`<button class="linkbtn" onClick=${() => { app.forget(me.id); app.signOut(); }}>Sign out and forget me on this phone</button>`}</section>
+        <button class="btn line" onClick=${() => { app.signOut(); }}><${Icon} n="swap" s=${18} />Sign out</button>${app.isRemembered(me.id) && html`<button class="linkbtn" onClick=${() => { app.forget(me.id); if (app.cloud) app.cloud.signOut(); app.signOut(); }}>Sign out and forget me on this phone</button>`}</section>
       <${ChangePw} />
+      ${app.cloud && html`<section class="card"><span class="eyebrow">Shared with the school</span>
+        <span class="small">${app.cloud.ready ? 'Connected. Registers go to the school database and other phones see them within seconds.' : app.cloud.user ? 'Connecting to the school database…' : 'Not connected. Sign out and sign in again with signal to connect.'}</span>
+        ${app.cloud.lastSync && html`<span class="tiny muted">Last update ${String(app.cloud.lastSync.getHours()).padStart(2, '0')}:${String(app.cloud.lastSync.getMinutes()).padStart(2, '0')}.</span>`}
+        ${app.cloud.err && html`<span class="tiny" style="color:var(--abs-ink)">Problem: ${app.cloud.err}</span>`}</section>`}
       <section class="card"><span class="eyebrow">Signal</span>
         <label class="check"><input type="checkbox" checked=${app.fakeOffline} onChange=${(e) => app.setFakeOffline(e.target.checked)} /><span>Pretend there is no signal<br /><span class="small muted">For testing. Take a register, see it wait on the phone, then switch this off and watch it send.</span></span></label>
         <span class="small">${app.offline ? 'No signal right now.' : 'Online.'} ${n ? n + (n === 1 ? ' register is' : ' registers are') + ' waiting to send.' : 'Nothing waiting to send.'}</span></section>

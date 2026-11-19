@@ -10,11 +10,15 @@ const libs = {
   'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js': 'jspdf-autotable/dist/jspdf.plugin.autotable.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js': 'pdfjs-dist/build/pdf.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js': 'pdfjs-dist/build/pdf.worker.min.js',
+  'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js': '@supabase/supabase-js/dist/umd/supabase.js',
 };
+// the shared school database. The publishable key is meant to be public: the database's own rules decide who may read what.
+const CLOUD = { url: 'https://jyqkvnnamcawgepqloom.supabase.co', key: 'sb_publishable_OacFCbKUrU294VpMEpt_lQ_rE5_pgSk' };
 const crest = 'data:image/jpeg;base64,' + fs.readFileSync(process.env.CREST || path.join(d, 'assets', 'crest.jpeg')).toString('base64');
-let js = ['core.js', 'tools.js', 'timetable.js', 'ui.js'].map((f) => fs.readFileSync(path.join(d, 'src', f), 'utf8')).join('\n');
+let js = ['core.js', 'tools.js', 'timetable.js', 'cloud.js', 'ui.js'].map((f) => fs.readFileSync(path.join(d, 'src', f), 'utf8')).join('\n');
 js = js.replace("'__CREST__'", JSON.stringify(crest));
-let html = fs.readFileSync(path.join(d, 'src/index.html'), 'utf8').replace('/*STYLE*/', () => fs.readFileSync(path.join(d, 'src/style.css'), 'utf8')).replace('/*SCRIPT*/', () => js);
+let html = fs.readFileSync(path.join(d, 'src/index.html'), 'utf8').replace('/*STYLE*/', () => fs.readFileSync(path.join(d, 'src/style.css'), 'utf8'))
+  .replace('<script>\n/*SCRIPT*/', () => '<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>\n<script>window.KAT_CLOUD = ' + JSON.stringify(CLOUD) + ';</script>\n<script>\n/*SCRIPT*/').replace('/*SCRIPT*/', () => js);
 const files = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon.svg'];
 for (const [url, rel] of Object.entries(libs)) { const name = path.basename(rel); fs.copyFileSync(path.join(L, rel), path.join(out, 'lib', name)); html = html.split(url).join('lib/' + name); files.push('lib/' + name); }
 const VERSION = 'kat-' + new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
@@ -32,6 +36,7 @@ self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) =
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
+  if (url.hostname.endsWith('supabase.co')) return; // the shared database: always live, never a saved copy
   if (url.origin !== location.origin) { e.respondWith(caches.match(e.request).then((r) => r || fetch(e.request).then((res) => { const cp = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, cp)); return res; }).catch(() => r))); return; }
   // own files: use the network when there is signal (so updates arrive), fall back to the saved copy offline
   e.respondWith(fetch(e.request).then((res) => { const cp = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, cp)); return res; }).catch(() => caches.match(e.request).then((r) => r || caches.match('index.html'))));

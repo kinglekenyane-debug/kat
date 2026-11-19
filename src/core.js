@@ -1,5 +1,5 @@
 /* ===== KAT core: school configuration, dates, sample data and the data store ===== */
-const TENG_VERSION = '0.3 test';
+const TENG_VERSION = '0.5 test';
 const DATA_VERSION = 7;
 
 /* ---- Schools. Each school has its own data space, name, crest and colours. ---- */
@@ -375,7 +375,7 @@ class Store {
     this.fakeOffline = v; LS.set('teng:fakeOffline', v);
     if (!this.offline) this.flush(); else this.emit();
   }
-  pending() { return this.db ? Object.values(this.db.registers).filter((r) => !r.synced && r.by === this.session.userId).length : 0; }
+  pending() { return this.db ? Object.values(this.db.registers).filter((r) => !r.synced && (this.cloud || r.by === this.session.userId)).length : 0; }
   flush() {
     if (!this.db || this.offline) return;
     let n = 0;
@@ -392,7 +392,7 @@ class Store {
     const k = regKey(kind, ref, date, period);
     const prev = this.db.registers[k];
     const clean = {}; Object.keys(marks).forEach((a) => { if (marks[a] === 'A' || marks[a] === 'L') clean[a] = marks[a]; });
-    const rec = { kind, ref, date, period: period || 0, marks: clean, by: this.session.userId, coverFor: coverFor || null, at: (prev && prev.at) || stamp(), editedAt: prev ? stamp() : null, lateEntry: prev ? prev.lateEntry || null : date < todayISO() ? stamp() : null, synced: !this.offline };
+    const rec = { kind, ref, date, period: period || 0, marks: clean, by: this.session.userId, coverFor: coverFor || null, at: (prev && prev.at) || stamp(), editedAt: prev ? stamp() : null, lateEntry: prev ? prev.lateEntry || null : date < todayISO() ? stamp() : null, synced: !this.offline && !(this.cloud && this.cloud.ready) };
     this.db.registers[k] = rec;
     if (kind === 'm') {
       Object.keys(clean).forEach((a) => { if (clean[a] === 'A' && !this.db.reasons[a + '|' + date]) this.db.reasons[a + '|' + date] = { code: null, note: '', at: null, by: null }; });

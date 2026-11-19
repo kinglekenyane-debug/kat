@@ -295,9 +295,11 @@ details summary { cursor: pointer; }
 <script src="lib/xlsx.full.min.js"></script>
 <script src="lib/jspdf.umd.min.js"></script>
 <script src="lib/jspdf.plugin.autotable.min.js"></script>
+<script src="lib/supabase.js"></script>
+<script>window.KAT_CLOUD = {"url":"https://jyqkvnnamcawgepqloom.supabase.co","key":"sb_publishable_OacFCbKUrU294VpMEpt_lQ_rE5_pgSk"};</script>
 <script>
 /* ===== KAT core: school configuration, dates, sample data and the data store ===== */
-const TENG_VERSION = '0.3 test';
+const TENG_VERSION = '0.5 test';
 const DATA_VERSION = 7;
 
 /* ---- Schools. Each school has its own data space, name, crest and colours. ---- */
@@ -673,7 +675,7 @@ class Store {
     this.fakeOffline = v; LS.set('teng:fakeOffline', v);
     if (!this.offline) this.flush(); else this.emit();
   }
-  pending() { return this.db ? Object.values(this.db.registers).filter((r) => !r.synced && r.by === this.session.userId).length : 0; }
+  pending() { return this.db ? Object.values(this.db.registers).filter((r) => !r.synced && (this.cloud || r.by === this.session.userId)).length : 0; }
   flush() {
     if (!this.db || this.offline) return;
     let n = 0;
@@ -690,7 +692,7 @@ class Store {
     const k = regKey(kind, ref, date, period);
     const prev = this.db.registers[k];
     const clean = {}; Object.keys(marks).forEach((a) => { if (marks[a] === 'A' || marks[a] === 'L') clean[a] = marks[a]; });
-    const rec = { kind, ref, date, period: period || 0, marks: clean, by: this.session.userId, coverFor: coverFor || null, at: (prev && prev.at) || stamp(), editedAt: prev ? stamp() : null, lateEntry: prev ? prev.lateEntry || null : date < todayISO() ? stamp() : null, synced: !this.offline };
+    const rec = { kind, ref, date, period: period || 0, marks: clean, by: this.session.userId, coverFor: coverFor || null, at: (prev && prev.at) || stamp(), editedAt: prev ? stamp() : null, lateEntry: prev ? prev.lateEntry || null : date < todayISO() ? stamp() : null, synced: !this.offline && !(this.cloud && this.cloud.ready) };
     this.db.registers[k] = rec;
     if (kind === 'm') {
       Object.keys(clean).forEach((a) => { if (clean[a] === 'A' && !this.db.reasons[a + '|' + date]) this.db.reasons[a + '|' + date] = { code: null, note: '', at: null, by: null }; });
@@ -1145,11 +1147,178 @@ function matchStaff(db, ttName) {
   return null;
 }
 
+
+/* ---- shared database (Supabase): every phone in the school sees the same registers ----
+   Like a shared class file in the staffroom: each phone keeps its own copy to work from,
+   and posts every change to the shared file as soon as there is signal. Other phones get
+   the change a second later. Without signal, changes wait on the phone and go when it returns. */
+const CLOUD_MAPS = ['registers', 'reasons', 'captured', 'changes', 'learners'];
+const CLOUD_LISTS = ['staff', 'classes', 'groups', 'incidents', 'books'];
+const CLOUD_SINGLE = ['settings', 'log'];
+class Cloud {
+  constructor() {
+    const cfg = window.KAT_CLOUD;
+    this.on = !!(cfg && cfg.url && window.supabase && window.supabase.createClient);
+    this.sb = this.on ? window.supabase.createClient(cfg.url, cfg.key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'kat-auth' } }) : null;
+    this.last = {}; this.user = null; this.member = null; this.ready = false; this.busy = false; this.again = false; this.chan = null; this.lastSync = null; this.err = null;
+  }
+  attach(store) {
+    if (!this.on) return;
+    this.store = store; store.cloud = this;
+    const persist0 = store.persist.bind(store);
+    store.persist = () => { persist0(); this.soon(); };
+    store.flush = () => { this.soon(0); };
+    this.sb.auth.getSession().then(({ data }) => { this.user = data.session ? data.session.user : null; if (this.user) this.start(); });
+    setInterval(() => { if (this.ready && !store.offline) this.push(); }, 60000);
+  }
+  email(school, code) { return String(code).trim().toLowerCase() + '.' + school + '@kat.invalid'; }
+  async status(school, code) {
+    const { data, error } = await this.sb.rpc('symbol_status', { p_school: school, p_code: String(code).trim().toUpperCase() });
+    if (error) throw error; return data;
+  }
+  // sign in (or, the first time, choose a password). Returns { ok } or { err } or { first: true } when a new password is needed.
+  async signIn(school, code, pw, pw2) {
+    code = String(code).trim().toUpperCase();
+    let st; try { st = await this.status(school, code); } catch (e) { return { err: 'Could not reach the school database. Check the signal and try again.' }; }
+    if (st === 'unknown') return { err: 'No staff member has the symbol "' + code + '" at this school. Check with the office.' };
+    if (st === 'claimed') {
+      const { data, error } = await this.sb.auth.signInWithPassword({ email: this.email(school, code), password: pw });
+      if (error) return { err: /invalid/i.test(error.message) ? 'wrong' : error.message };
+      this.user = data.user;
+    } else {
+      if (!pw2) return { first: true };
+      if (pw.length < 6) return { err: 'Choose a password of at least 6 characters.' };
+      if (pw !== pw2) return { err: 'The two passwords are not the same.' };
+      await this.sb.auth.signOut().catch(() => {});
+      const { data, error } = await this.sb.auth.signUp({ email: this.email(school, code), password: pw });
+      if (error || !data.session) return { err: (error && error.message) || 'Could not create the login.' };
+      this.user = data.user;
+      const c = await this.sb.rpc('claim_symbol', { p_school: school, p_code: code });
+      if (c.error) return { err: c.error.message };
+      if (st === 'new-school') { this.member = { school_id: school, staff_code: code }; this.last = {}; await this.push(true); LS.set('kat:cloud:' + school, 1); }
+    }
+    await this.start();
+    return { ok: true, code };
+  }
+  async signOut() { this.stop(); this.user = null; this.member = null; await this.sb.auth.signOut().catch(() => {}); }
+  async changePassword(pw) { const { error } = await this.sb.auth.updateUser({ password: pw }); return error ? error.message : null; }
+  async resetSymbol(code) { const { error } = await this.sb.rpc('reset_symbol', { p_code: code }); return error ? error.message : null; }
+
+  async start() {
+    const s = this.store;
+    const m = await this.sb.from('members').select('school_id, staff_code').eq('user_id', this.user.id).maybeSingle();
+    if (m.error || !m.data) { this.err = m.error ? m.error.message : 'This login is not linked to a school.'; s.emit(); return; }
+    this.member = m.data;
+    if (!s.db || s.db.schoolId !== m.data.school_id) s.loadSchool(m.data.school_id);
+    await this.pull();
+    this.listen();
+    this.ready = true;
+    this.push();
+  }
+  stop() { if (this.chan) { this.sb.removeChannel(this.chan); this.chan = null; } this.ready = false; }
+
+  // turn the school's records into rows: one row per register, learner, staff member…
+  rows(db) {
+    const out = {};
+    const put = (coll, id, data) => { out[coll + '\u0001' + id] = { coll, id: String(id), data }; };
+    CLOUD_MAPS.forEach((c) => Object.entries(db[c] || {}).forEach(([k, v]) => { const d = Object.assign({}, v); delete d.synced; delete d.sentAt; put(c, k, d); }));
+    CLOUD_LISTS.forEach((c) => (db[c] || []).forEach((v, i) => { const d = Object.assign({}, v, { _ord: i }); delete d.pw; put(c, v.id, d); }));
+    put('settings', 'main', db.settings || {});
+    put('log', 'main', { list: db.log || [], createdFor: db.createdFor });
+    return out;
+  }
+  async pull() {
+    const s = this.store, school = this.member.school_id, all = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await this.sb.from('docs').select('coll, id, data').eq('school_id', school).range(from, from + 999);
+      if (error) { this.err = error.message; s.emit(); return; }
+      all.push(...data); if (data.length < 1000) break;
+    }
+    if (!all.length) return;
+    const seen = LS.get('kat:cloud:' + school);
+    const old = s.db, db = { v: DATA_VERSION, schoolId: school, createdFor: old.createdFor, settings: {}, log: [] };
+    CLOUD_MAPS.forEach((c) => { db[c] = {}; }); CLOUD_LISTS.forEach((c) => { db[c] = []; });
+    this.last = {};
+    all.forEach((r) => {
+      this.last[r.coll + '\u0001' + r.id] = JSON.stringify(r.data);
+      if (CLOUD_MAPS.includes(r.coll)) db[r.coll][r.id] = Object.assign({}, r.data, r.coll === 'registers' ? { synced: true } : {});
+      else if (CLOUD_LISTS.includes(r.coll)) db[r.coll].push(r.data);
+      else if (r.coll === 'settings') db.settings = r.data;
+      else if (r.coll === 'log') { db.log = r.data.list || []; if (r.data.createdFor) db.createdFor = r.data.createdFor; }
+    });
+    CLOUD_LISTS.forEach((c) => { db[c].sort((a, b) => a._ord - b._ord); db[c].forEach((x) => delete x._ord); });
+    // keep what only this phone knows: password hashes, and registers still waiting to send
+    db.staff.forEach((x) => { const o = (old.staff || []).find((y) => y.id === x.id); if (o && o.pw) x.pw = o.pw; });
+    // (only once this phone has worked with the shared data: the made-up sample on a new phone is thrown away)
+    if (seen) Object.entries(old.registers || {}).forEach(([k, r]) => { if (!r.synced) db.registers[k] = r; });
+    uniqueSymbols(db);
+    s.db = db; LS.set(s.key(school), db); LS.set('kat:cloud:' + school, 1);
+    this.lastSync = new Date(); this.err = null; s.emit();
+  }
+  listen() {
+    const s = this.store, school = this.member.school_id;
+    if (this.chan) this.sb.removeChannel(this.chan);
+    this.chan = this.sb.channel('school-' + school).on('postgres_changes', { event: '*', schema: 'public', table: 'docs', filter: 'school_id=eq.' + school }, (p) => {
+      const r = p.eventType === 'DELETE' ? p.old : p.new; if (!r || !r.coll) return;
+      const key = r.coll + '\u0001' + r.id, db = s.db;
+      if (p.eventType === 'DELETE') {
+        delete this.last[key];
+        if (CLOUD_MAPS.includes(r.coll)) delete db[r.coll][r.id];
+        else if (CLOUD_LISTS.includes(r.coll)) db[r.coll] = db[r.coll].filter((x) => String(x.id) !== r.id);
+      } else {
+        const js = JSON.stringify(r.data); if (this.last[key] === js) return; this.last[key] = js;
+        const d = Object.assign({}, r.data);
+        if (CLOUD_MAPS.includes(r.coll)) { if (r.coll === 'registers') d.synced = true; db[r.coll][r.id] = d; }
+        else if (CLOUD_LISTS.includes(r.coll)) {
+          const ord = d._ord; delete d._ord; const i = db[r.coll].findIndex((x) => String(x.id) === r.id);
+          if (i >= 0) { if (r.coll === 'staff' && db.staff[i].pw) d.pw = db.staff[i].pw; db[r.coll][i] = d; } else db[r.coll].splice(Math.min(ord, db[r.coll].length), 0, d);
+        } else if (r.coll === 'settings') db.settings = d;
+        else if (r.coll === 'log') db.log = d.list || [];
+      }
+      LS.set(s.key(school), db); this.lastSync = new Date(); s.emit();
+    }).subscribe();
+  }
+  soon(ms) { if (!this.ready) return; clearTimeout(this._t); this._t = setTimeout(() => this.push(), ms == null ? 700 : ms); }
+  // send only what changed since the last send
+  async push(force) {
+    const s = this.store; if ((!this.ready && !force) || !s.db || !this.member) return;
+    if (s.offline) { if (s.pending()) this.hadWaiting = true; return; }
+    if (this.busy) { this.again = true; return; }
+    this.busy = true;
+    try {
+      const school = this.member.school_id, now = this.rows(s.db), up = [], gone = [];
+      const waiting = Object.keys(s.db.registers).filter((k) => !s.db.registers[k].synced);
+      Object.entries(now).forEach(([k, r]) => { const js = JSON.stringify(r.data); if (this.last[k] !== js) up.push(Object.assign({ school_id: school, updated_at: new Date().toISOString() }, r)); });
+      Object.keys(this.last).forEach((k) => { if (!now[k]) gone.push(k); });
+      for (let i = 0; i < up.length; i += 400) {
+        const part = up.slice(i, i + 400);
+        const { error } = await this.sb.from('docs').upsert(part, { onConflict: 'school_id,coll,id' });
+        if (error) throw error;
+        part.forEach((r) => { this.last[r.coll + '\u0001' + r.id] = JSON.stringify(r.data); });
+      }
+      for (const k of gone) {
+        const [coll, id] = k.split('\u0001');
+        const { error } = await this.sb.from('docs').delete().match({ school_id: school, coll, id });
+        if (error) throw error; delete this.last[k];
+      }
+      const n = waiting.length; waiting.forEach((k) => { const r = s.db.registers[k]; if (r) { r.synced = true; r.sentAt = r.sentAt || stamp(); } });
+      LS.set(s.key(school), s.db);
+      this.lastSync = new Date(); this.err = null;
+      if (n && this.hadWaiting) s.toast('Signal is back. ' + n + (n === 1 ? ' register was' : ' registers were') + ' sent to the office.');
+      this.hadWaiting = false; s.emit();
+    } catch (e) { this.err = e.message || String(e); this.hadWaiting = true; s.emit(); }
+    finally { this.busy = false; if (this.again) { this.again = false; this.soon(200); } }
+  }
+}
+const cloud = new Cloud();
+
 /* ===== KAT screens (Preact + htm) ===== */
 const { h, render } = preact;
 const { useState, useEffect, useMemo, useRef } = preactHooks;
 const html = htm.bind(h);
 const app = new Store();
+if (typeof cloud !== 'undefined') cloud.attach(app);
+const onCloud = () => !!(app.cloud && !app.offline);
 
 /* ---- icons ---- */
 const P = {
@@ -1248,11 +1417,18 @@ function Welcome() {
   const db = app.db, s = app.school;
   const [who, setWho] = useState(null), [sym, setSym] = useState(''), [pw, setPw] = useState(''), [pw2, setPw2] = useState(''), [err, setErr] = useState(''), [tries, setTries] = useState(0), [waitTill, setWaitTill] = useState(0), [keep, setKeep] = useState(true);
   const findSym = (v) => db.staff.find((x) => (x.code || '').toUpperCase() === v.trim().toUpperCase());
+  const [cst, setCst] = useState(null), [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setCst(null); if (!onCloud() || sym.trim().length < 2) return;
+    let live = true; const t = setTimeout(() => { app.cloud.status(sid, sym).then((v) => { if (live) setCst(v); }).catch(() => {}); }, 300);
+    return () => { live = false; clearTimeout(t); };
+  }, [sym, sid]);
   const remembered = app.rememberedUsers();
   const choose = (x) => { setWho(x); setSym(x.code || ''); setPw(''); setPw2(''); setErr(''); setTimeout(() => { const el = document.getElementById('wpw'); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.focus(); } }, 50); };
   const finish = async (x) => { if (keep) await app.remember(x.id); else app.forget(x.id); app.signIn(sid, x.id, keep); };
   const login = async (e) => {
     e && e.preventDefault();
+    if (onCloud()) return cloudLogin();
     const x = who || findSym(sym); if (!x) { setErr('No staff member has the symbol "' + sym + '". Check with the office.'); return; }
     if (staffGroup(x) !== grp) { setErr(x.name + ' signs in as ' + ROLE_GROUPS.find((r) => r[0] === staffGroup(x))[1] + '. Go back and choose that.'); return; }
     if (!who) setWho(x);
@@ -1261,6 +1437,32 @@ function Welcome() {
     if (await app.checkPassword(x.id, pw)) { await finish(x); return; }
     const t = tries + 1; setTries(t); if (t >= 5) { setWaitTill(Date.now() + 30000); setTries(0); }
     setErr(t >= 5 ? 'Wrong password five times. Wait 30 seconds, or ask an admin to reset it.' : 'Wrong password. Try again.');
+  };
+  // with the shared database: the login lives on the school's database, so any phone works
+  const cloudLogin = async () => {
+    if (Date.now() < waitTill) { setErr('Too many wrong tries. Wait a few seconds and try again.'); return; }
+    const x1 = who || findSym(sym);
+    if (x1 && staffGroup(x1) !== grp) { setErr(x1.name + ' signs in as ' + ROLE_GROUPS.find((r) => r[0] === staffGroup(x1))[1] + '. Go back and choose that.'); return; }
+    if (!sym.trim()) { setErr('Type your symbol.'); return; }
+    if (!pw) { setErr('Type your password.'); return; }
+    const first = cst === 'free' || cst === 'new-school';
+    if (first) { if (pw.length < 6) { setErr('Choose a password of at least 6 characters.'); return; } if (pw !== pw2) { setErr('The two passwords are not the same.'); return; } }
+    setBusy(true); setErr('');
+    const r = await app.cloud.signIn(sid, sym, pw, first ? pw2 : null);
+    setBusy(false);
+    if (r.first) { setCst('free'); setErr('First time: choose a password and type it twice.'); return; }
+    if (r.err === 'wrong') { const t = tries + 1; setTries(t); if (t >= 5) { setWaitTill(Date.now() + 30000); setTries(0); } setErr(t >= 5 ? 'Wrong password five times. Wait 30 seconds, or ask an admin to reset it.' : 'Wrong password. Try again.'); return; }
+    if (r.err) { setErr(r.err); return; }
+    const sid2 = app.cloud.member.school_id, x = app.db.staff.find((y) => (y.code || '').toUpperCase() === r.code);
+    if (!x) { setErr('Signed in, but ' + r.code + ' is not on the staff list. Ask the office.'); return; }
+    await app.setPassword(x.id, pw);
+    if (keep) await app.remember(x.id); else app.forget(x.id);
+    app.signIn(sid2, x.id, keep);
+  };
+  const cont = (x) => {
+    const c = app.cloud;
+    if (c && !app.offline && !(c.user && c.user.email === c.email(sid, x.code))) { setGrp(staffGroup(x)); setStep('signin'); choose(x); setErr('Type your password once to connect this phone to the school database.'); return; }
+    app.signIn(sid, x.id);
   };
   const roleLine = (x) => (x.code ? x.code + ' · ' : '') + x.title + (x.registerClass ? ' · register class ' + x.registerClass : '');
   const person = (x) => html`<button class="person" onClick=${() => choose(x)}><span class="avatar">${x.code || initials(x.name)}</span><span class="grow"><b>${x.name}</b><br /><span class="tiny muted">${roleLine(x)}</span></span></button>`;
@@ -1276,7 +1478,7 @@ function Welcome() {
       <div class="small" style="opacity:.9">${s.name}${s.local ? ' · ' + s.local : ''}</div>
     </div></div>
     <main class="col gut content">
-      ${remembered.length > 0 && html`<section class="stack"><span class="eyebrow">Welcome back</span>${remembered.map((x) => html`<button class="person" onClick=${() => app.signIn(sid, x.id)}><span class="avatar">${x.code || initials(x.name)}</span><span class="grow"><b>Continue as ${x.short || x.name}</b><br /><span class="tiny muted">Remembered on this phone</span></span><${Icon} n="chev" s=${18} /></button>`)}</section>`}
+      ${remembered.length > 0 && html`<section class="stack"><span class="eyebrow">Welcome back</span>${remembered.map((x) => html`<button class="person" onClick=${() => cont(x)}><span class="avatar">${x.code || initials(x.name)}</span><span class="grow"><b>Continue as ${x.short || x.name}</b><br /><span class="tiny muted">Remembered on this phone</span></span><${Icon} n="chev" s=${18} /></button>`)}</section>`}
       <button class="btn big" onClick=${() => setStep('role')}>${remembered.length ? 'Sign in as someone else' : 'Get started'}</button>
       <div class="boxnote warn"><span><strong>Test version.</strong> Every learner and mark here is made up.</span></div>
       <details class="small muted"><summary>Change school</summary><div class="wrap" style="margin-top:8px">${SCHOOLS.map((x) => { const st = (LS.get('teng:data:' + x.id) || {}).settings || {}; return html`<button class="schoolpick" aria-pressed=${String(sid === x.id)} onClick=${() => setSid(x.id)}><img src=${st.crest || x.crest} alt="" /><span class="grow"><b>${st.name || x.name}</b><br /><span class="tiny muted">${x.id === 'ficksburg' ? 'Pilot school' : 'Shows each school has its own data'}</span></span></button>`; })}</div></details>
@@ -1301,12 +1503,13 @@ function Welcome() {
       <form class="card" onSubmit=${login}>
         <label class="f" for="wsym">Your symbol<input id="wsym" class="inp" autocomplete="username" style="text-transform:uppercase" placeholder="e.g. LK" value=${sym} onInput=${(e) => { setSym(e.target.value.toUpperCase()); setWho(null); setErr(''); }} /></label>
         ${x0 && html`<span class="small muted">${x0.name} · ${x0.title}</span>`}
-        ${x0 && !x0.pw ? html`<div class="boxnote info"><span><strong>First time?</strong> Choose your own password. Nobody else, not even the office, can see it.</span></div>
+        ${(onCloud() ? cst === 'free' || cst === 'new-school' : x0 && !x0.pw) ? html`<div class="boxnote info"><span><strong>First time?</strong> Choose your own password. Nobody else, not even the office, can see it.</span></div>
           <label class="f" for="wpw">New password<input id="wpw" type="password" class="inp" autocomplete="new-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>
           <label class="f" for="wpw2">Type it again<input id="wpw2" type="password" class="inp" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /></label>` : html`<label class="f" for="wpw">Password<input id="wpw" type="password" class="inp" autocomplete="current-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>`}
         <label class="check"><input type="checkbox" checked=${keep} onChange=${(e) => setKeep(e.target.checked)} /><span>Remember me on this phone<br /><span class="tiny muted">Next time KAT opens straight away, no password. Untick on a shared phone.</span></span></label>
         ${err && html`<span class="small" role="alert" style="color:var(--abs-ink);font-weight:600">${err}</span>`}
-        <button class="btn big" type="submit">Sign in</button>
+        ${onCloud() && cst === 'unknown' && html`<span class="small muted">No one at ${s.short || s.name} has the symbol ${sym}.</span>`}
+        <button class="btn big" type="submit" disabled=${busy}>${busy ? 'Signing in…' : 'Sign in'}</button>
         <span class="tiny muted">Forgot your password? An admin can reset it, then you choose a new one.</span>
       </form>
       ${people.length > 0 && html`<section class="stack"><span class="eyebrow">Test shortcut</span>
@@ -2039,7 +2242,7 @@ function Admin({ nav }) {
           ${db.staff.map((p) => html`<tr><td><b>${p.code || ''}</b></td><td><b>${p.name}</b><br /><span class="tiny muted">${p.title}</span></td><td>${(ROLE_GROUPS.find((r) => r[0] === staffGroup(p)) || [])[1]}</td><td>${p.registerClass || ''}</td><td><button class="btn sm soft" onClick=${() => setEdit(Object.assign({}, p))}>Edit</button></td></tr>`)}</tbody></table></div></section>
       <section class="card"><span class="eyebrow">Data</span>
         <span class="small muted">${Object.keys(db.learners).length} learners · ${db.classes.length} register classes · ${db.groups.length} subject classes · ${Object.keys(db.registers).length} registers stored. This school's data is kept apart from every other school.</span>
-        <div class="wrap"><button class="btn line" onClick=${exportJson}>Download all data (JSON)</button>${confirmReset ? html`<button class="btn danger" onClick=${() => { app.resetSample(); setConfirmReset(false); app.toast('Sample data reset.'); }}>Yes, reset everything</button><button class="btn soft" onClick=${() => setConfirmReset(false)}>Cancel</button>` : html`<button class="btn soft" onClick=${() => setConfirmReset(true)}>Reset sample data</button>`}</div></section>
+        <div class="wrap"><button class="btn line" onClick=${exportJson}>Download all data (JSON)</button>${app.cloud ? null : confirmReset ? html`<button class="btn danger" onClick=${() => { app.resetSample(); setConfirmReset(false); app.toast('Sample data reset.'); }}>Yes, reset everything</button><button class="btn soft" onClick=${() => setConfirmReset(false)}>Cancel</button>` : html`<button class="btn soft" onClick=${() => setConfirmReset(true)}>Reset sample data</button>`}</div></section>
     </main>
     ${edit && html`<${Sheet} title=${edit.id ? 'Edit ' + edit.name : 'Add a person'} onClose=${() => setEdit(null)}>
       <label class="f" for="pn">Full name<input id="pn" class="inp" value=${edit.name} onInput=${(e) => setEdit(Object.assign({}, edit, { name: e.target.value }))} /></label>
@@ -2048,7 +2251,7 @@ function Admin({ nav }) {
       <div class="grid2"><label class="f" for="pr">Signs in as<select id="pr" class="inp" value=${staffGroup(edit)} onChange=${(e) => setEdit(Object.assign({}, edit, groupFields(e.target.value)))}>${ROLE_GROUPS.map(([k, l]) => html`<option value=${k}>${l}</option>`)}</select></label>
         <label class="f" for="pc">Register class<select id="pc" class="inp" value=${edit.registerClass || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { registerClass: e.target.value || null }))}><option value="">None</option>${db.classes.map((c) => html`<option>${c.id}</option>`)}</select></label>
         <label class="f" for="pd">Head of department for<select id="pd" class="inp" value=${edit.dhGrade || ''} onChange=${(e) => setEdit(Object.assign({}, edit, { dhGrade: e.target.value ? Number(e.target.value) : null }))}><option value="">No grade</option>${s.grades.map((g) => html`<option value=${g}>Grade ${g}</option>`)}</select></label></div>
-      ${edit.id && html`<div class="between"><span class="small muted">${edit.pw ? 'Has a password.' : 'No password yet. They choose one the first time they sign in.'}</span>${edit.pw && html`<button class="btn sm soft" onClick=${() => { app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button>`}</div>`}
+      ${edit.id && (app.cloud ? html`<div class="between"><span class="small muted">If ${edit.short || edit.name} forgot their password, reset it. They choose a new one at the next sign-in.</span><button class="btn sm soft" onClick=${async () => { if (app.offline) { app.toast('Resetting a password needs signal.'); return; } const er = await app.cloud.resetSymbol(edit.code); if (er) { app.toast(er); return; } app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button></div>` : html`<div class="between"><span class="small muted">${edit.pw ? 'Has a password.' : 'No password yet. They choose one the first time they sign in.'}</span>${edit.pw && html`<button class="btn sm soft" onClick=${() => { app.resetPassword(edit.id); setEdit(Object.assign({}, edit, { pw: undefined })); app.toast('Password reset. ' + edit.name + ' chooses a new one at the next sign-in.'); }}>Reset password</button>`}</div>`)}
       <button class="btn big" onClick=${() => { if (!edit.name.trim()) return; const sc = edit.code || symbolGuess(edit.name); const clash = db.staff.find((o) => o.id !== edit.id && o.code === sc); if (clash) { app.toast('The symbol ' + sc + ' is already used by ' + clash.name + '. Choose another.'); return; } app.saveStaff(Object.assign({}, edit, { short: edit.short || edit.name, code: edit.code || symbolGuess(edit.name) })); setEdit(null); app.toast('Saved.'); }}>Save</button>
     <//>`}
     <${BottomNav} nav=${nav} cur="admin" /></div>`;
@@ -2056,7 +2259,7 @@ function Admin({ nav }) {
 
 function ChangePw() {
   const [o, setO] = useState(''), [n, setN] = useState(''), [n2, setN2] = useState(''), [msg, setMsg] = useState('');
-  const go = async (e) => { e.preventDefault(); if (!(await app.checkPassword(app.me.id, o))) { setMsg('Your current password is wrong.'); return; } if (n.length < 6) { setMsg('Use at least 6 characters.'); return; } if (n !== n2) { setMsg('The new passwords are not the same.'); return; } await app.setPassword(app.me.id, n); setO(''); setN(''); setN2(''); setMsg(''); app.toast('Password changed.'); };
+  const go = async (e) => { e.preventDefault(); if (!(await app.checkPassword(app.me.id, o))) { setMsg('Your current password is wrong.'); return; } if (n.length < 6) { setMsg('Use at least 6 characters.'); return; } if (n !== n2) { setMsg('The new passwords are not the same.'); return; } if (app.cloud) { if (app.offline) { setMsg('Changing your password needs signal.'); return; } const er = await app.cloud.changePassword(n); if (er) { setMsg(er); return; } } await app.setPassword(app.me.id, n); setO(''); setN(''); setN2(''); setMsg(''); app.toast('Password changed.'); };
   return html`<form class="card" onSubmit=${go}><span class="eyebrow">Change my password</span>
     <label class="f" for="cpo">Current password<input id="cpo" type="password" class="inp" autocomplete="current-password" value=${o} onInput=${(e) => setO(e.target.value)} /></label>
     <label class="f" for="cpn">New password<input id="cpn" type="password" class="inp" autocomplete="new-password" value=${n} onInput=${(e) => setN(e.target.value)} /></label>
@@ -2094,8 +2297,12 @@ function Settings({ nav }) {
   return html`<div class="app"><${Band} nav=${nav} noBack=${me.role !== 'teacher'} title="You and this phone" sub=${app.school.name} />
     <main class="col gut content">
       <section class="card"><div class="row"><span class="avatar">${initials(me.name)}</span><span class="grow"><b>${me.name}</b><br /><span class="small muted">${me.code ? 'Symbol ' + me.code + ' · ' : ''}${me.title}${me.registerClass ? ' · register class ' + me.registerClass : ''}</span></span></div>
-        <button class="btn line" onClick=${() => { app.signOut(); }}><${Icon} n="swap" s=${18} />Sign out</button>${app.isRemembered(me.id) && html`<button class="linkbtn" onClick=${() => { app.forget(me.id); app.signOut(); }}>Sign out and forget me on this phone</button>`}</section>
+        <button class="btn line" onClick=${() => { app.signOut(); }}><${Icon} n="swap" s=${18} />Sign out</button>${app.isRemembered(me.id) && html`<button class="linkbtn" onClick=${() => { app.forget(me.id); if (app.cloud) app.cloud.signOut(); app.signOut(); }}>Sign out and forget me on this phone</button>`}</section>
       <${ChangePw} />
+      ${app.cloud && html`<section class="card"><span class="eyebrow">Shared with the school</span>
+        <span class="small">${app.cloud.ready ? 'Connected. Registers go to the school database and other phones see them within seconds.' : app.cloud.user ? 'Connecting to the school database…' : 'Not connected. Sign out and sign in again with signal to connect.'}</span>
+        ${app.cloud.lastSync && html`<span class="tiny muted">Last update ${String(app.cloud.lastSync.getHours()).padStart(2, '0')}:${String(app.cloud.lastSync.getMinutes()).padStart(2, '0')}.</span>`}
+        ${app.cloud.err && html`<span class="tiny" style="color:var(--abs-ink)">Problem: ${app.cloud.err}</span>`}</section>`}
       <section class="card"><span class="eyebrow">Signal</span>
         <label class="check"><input type="checkbox" checked=${app.fakeOffline} onChange=${(e) => app.setFakeOffline(e.target.checked)} /><span>Pretend there is no signal<br /><span class="small muted">For testing. Take a register, see it wait on the phone, then switch this off and watch it send.</span></span></label>
         <span class="small">${app.offline ? 'No signal right now.' : 'Online.'} ${n ? n + (n === 1 ? ' register is' : ' registers are') + ' waiting to send.' : 'Nothing waiting to send.'}</span></section>
