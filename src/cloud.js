@@ -92,6 +92,9 @@ class Cloud {
     uniqueSymbols(db);
     const code = admin.code.trim().toUpperCase();
     let p = db.staff.find((x) => (x.code || '').toUpperCase() === code);
+    // in the sample school, the new admin takes the place of the made-up office clerk
+    const clerk = sample && !p && db.staff.find((x) => x.role === 'office');
+    if (clerk) { Object.assign(clerk, { name: admin.name.trim(), short: admin.name.trim(), code, title: 'Administrative clerk' }); p = clerk; }
     if (!p) { p = Object.assign({ id: 's' + Date.now().toString(36), name: admin.name.trim(), short: admin.name.trim(), code, title: 'Administrative clerk', registerClass: null, dhGrade: null }, groupFields('admin')); db.staff.push(p); }
     const rows = Object.values(this.rows(db)).map((r) => Object.assign({ school_id: schoolId }, r));
     for (let i = 0; i < rows.length; i += 400) { const { error } = await this.sb.from('docs').upsert(rows.slice(i, i + 400), { onConflict: 'school_id,coll,id' }); if (error) return error.message; }
@@ -110,7 +113,10 @@ class Cloud {
     const s = this.store;
     const m = await this.sb.from('members').select('school_id, staff_code').eq('user_id', this.user.id).maybeSingle();
     if (!m.error && !m.data) { const d = await this.sb.rpc('is_developer'); if (d.data) { this.dev = true; this.ready = false; this.err = null; s.emit(); return; } }
-    if (m.error || !m.data) { this.err = m.error ? m.error.message : 'This login is not linked to a school.'; s.emit(); return; }
+    if (!m.error && !m.data) { // the login was reset or the school was restarted: back to the sign-in screen
+      const uid = s.session.userId; await this.signOut(); if (uid) { s.forget(uid); s.signOut(); s.toast('Your login was reset. Sign in again, with a starting password from the admin if you have a new one.'); } return;
+    }
+    if (m.error) { this.err = m.error.message; s.emit(); return; }
     this.member = m.data;
     if (!s.db || s.db.schoolId !== m.data.school_id) s.loadSchool(m.data.school_id);
     await this.pull();

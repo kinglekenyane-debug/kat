@@ -83,8 +83,8 @@ function BottomNav({ nav, cur }) {
   const role = app.me.role;
   const items = role === 'teacher'
     ? [['home', 'Home', 'home'], ['register', 'Register', 'check'], ['incidents', 'Incidents', 'warn'], ['books', 'Books', 'book']]
-    : role === 'office' ? [['office', 'Today', 'grid'], ['capture', 'SA-SAMS', 'inbox'], ['records', 'Records', 'search'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']]
-      : [['office', 'Today', 'grid'], ['records', 'Records', 'search'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']];
+    : role === 'office' ? [['office', 'Today', 'grid'], ['capture', 'SA-SAMS', 'inbox'], ['records', 'Records', 'file'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']]
+      : [['office', 'Today', 'grid'], ['records', 'Records', 'file'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']];
   return html`<nav class="bnav" aria-label="Main"><div class=${'bnav-in ' + (role === 'teacher' ? 'col' : 'wide')}>${items.map(([r, label, ic]) => html`<button aria-current=${cur === r ? 'page' : null} onClick=${() => { if (r === 'register') { const c = app.me.registerClass; c ? nav.reset('register', { cls: c }) : nav.reset('cover'); } else nav.reset(r); }}><${Icon} n=${ic} />${label}</button>`)}</div></nav>`;
 }
 
@@ -698,7 +698,7 @@ function LearnerView({ nav, acc }) {
 /* ================= paper preview + print lists ================= */
 function PaperPreview({ model, max = 3, full }) {
   const cell = (c, tag) => { const o = typeof c === 'string' || c == null ? { t: c || '' } : c; const cls = [o.cls, o.align === 'l' ? 'l' : ''].filter(Boolean).join(' '); const t = String(o.t).split('\n'); return h(tag, { class: cls || null }, t.map((x, i) => (i ? [h('br'), x] : x))); };
-  return html`<div class="paperwrap" style=${full ? 'max-height:none' : ''}>${model.pages.slice(0, max).map((pg) => html`<div class="paper">${pg.title.map((t) => html`<h3>${t}</h3>`)}<div class="meta">${pg.meta.map(([k, v]) => html`<span><b>${k}:</b> ${v}</span>`)}</div>
+  return html`<div class="paperwrap" style=${full ? 'max-height:none' : ''}>${model.pages.slice(0, max).map((pg) => html`<div class="paper">${model.crest ? html`<div class="paperhead"><img src=${model.crest} alt="School crest" /><div>${pg.title.map((t) => html`<h3>${t}</h3>`)}</div></div>` : pg.title.map((t) => html`<h3>${t}</h3>`)}<div class="meta">${pg.meta.map(([k, v]) => html`<span><b>${k}:</b> ${v}</span>`)}</div>
       <table><thead><tr>${pg.head.map((x) => cell(x, 'th'))}</tr></thead><tbody>${pg.body.map((r) => html`<tr>${r.map((x) => cell(x, 'td'))}</tr>`)}${(pg.foot || []).map((r) => html`<tr style="font-weight:700">${r.map((x) => cell(x, 'td'))}</tr>`)}</tbody></table>
       ${pg.after && html`<table style="margin-top:8px"><thead><tr>${pg.after.head.map((x) => cell(x, 'th'))}</tr></thead><tbody>${pg.after.body.map((r) => html`<tr style="height:30px">${r.map((x) => cell(x, 'td'))}</tr>`)}</tbody></table>`}
       ${pg.signLine && html`<div style="margin-top:12px">${pg.signLine}</div>`}<div class="foot">${pg.note}</div></div>`)}
@@ -843,6 +843,7 @@ function Records({ nav }) {
   const mine = myLearnerSet(db, app.me);
   const [mode, setMode] = useState('learner'), [acc, setAcc] = useState(null), [cls, setCls] = useState(db.classes[0].id), [grade, setGrade] = useState(String(s.grades[0]));
   const [reg, setReg] = useState('m'), [from, setFrom] = useState(mStart), [to, setTo] = useState(t0), [run, setRun] = useState(false);
+  const [tab, setTab] = useState('sum'), [month, setMonth] = useState(t0.slice(0, 7));
   const preset = (p) => { setRun(false); if (p === 'lm') { setMode('learner'); setReg('m'); setFrom(mStart); setTo(t0); } if (p === 'ls') { setMode('learner'); setReg((groupsFor[0] || {}).id || 'm'); } if (p === 'cm') { setMode('class'); setReg('m'); setFrom(mStart); setTo(t0); } if (p === 'gr') { setMode('grade'); setReg('m'); setFrom(addDays(t0, -14)); setTo(t0); } };
   const days = schoolDays(s, from, to).filter((d) => d <= t0);
   const groupsFor = (mode === 'learner' && acc ? db.groups.filter((g) => g.learners.includes(acc)) : db.groups).filter((g) => !mine || g.teacherId === app.me.id);
@@ -866,11 +867,15 @@ function Records({ nav }) {
       const g = reg !== 'm' ? db.groups.find((x) => x.id === reg) : null;
       const rows = accs.filter((a) => !g || g.learners.includes(a)).map((a) => { let p = 0, ab = 0, lt = 0; days.forEach((d) => { const ms = g ? g.slots.filter((x) => x.d === dow(d)).map((x) => periodMark(db, g, a, d, x.p)) : [morningMark(db, a, d)]; ms.forEach((mm) => { if (mm === 'P') p++; if (mm === 'A') ab++; if (mm === 'L') lt++; }); }); const tot = p + ab + lt; return [{ t: learnerName(db.learners[a]), align: 'l' }, a, db.learners[a].cls || '', String(p), String(ab), String(lt), tot ? Math.round((100 * (p + lt)) / tot) + '%' : '']; });
       const label = mode === 'class' ? 'Class ' + cls : 'Grade ' + grade;
-      out = { model: tableModel(app, (label + ' · ' + (g ? groupTitle(g) : 'Morning register')).toUpperCase(), [['From', fmtDMY(from)], ['To', fmtDMY(to)], ['School days', String(days.length)], ['Learners', String(rows.length)]], ['Learner', 'Acc No', 'Class', 'Present', 'Absent', 'Late', 'Attendance'], rows, 'p') };
+      const n = (i) => rows.reduce((t, r) => t + Number(r[i]), 0), P = n(3), A = n(4), LT = n(5);
+      const worst = rows.filter((r) => Number(r[4]) > 0).sort((x, y) => Number(y[4]) - Number(x[4])).slice(0, 5);
+      out = { cls: { pct: P + A + LT ? Math.round((100 * (P + LT)) / (P + A + LT)) : 0, days: days.length, a: A, lt: LT, learners: rows.length, worst, label: label + ' · ' + (g ? groupTitle(g) : 'Morning register'), teacher: mode === 'class' ? staffName(db, (db.classes.find((c) => c.id === cls) || {}).teacherId) : '' },
+        model: tableModel(app, (label + ' · ' + (g ? groupTitle(g) : 'Morning register')).toUpperCase(), [['From', fmtDMY(from)], ['To', fmtDMY(to)], ['School days', String(days.length)], ['Learners', String(rows.length)]], ['Learner', 'Acc No', 'Class', 'Present', 'Absent', 'Late', 'Attendance'], rows, 'p') };
     }
   }
-  const go = () => { if (mode === 'learner' && !acc) { app.toast('Choose a learner first.'); return; } setRun(true); app.logLookup('Records: ' + mode + ' ' + (acc || cls || grade) + ' ' + reg + ' ' + from + ' to ' + to); };
-  const rmonth = parse(from);
+  const go = () => { if (mode === 'learner' && !acc) { app.toast('Choose a learner first.'); return; } setRun(true); setTab('sum'); setMonth(from.slice(0, 7)); app.logLookup('Records: ' + mode + ' ' + (acc || cls || grade) + ' ' + reg + ' ' + from + ' to ' + to); };
+  const [my, mm] = month.split('-').map(Number);
+  const regModel = out && mode === 'class' && tab === 'reg' ? (reg === 'm' ? morningRegisterModel(app, cls, my, mm - 1) : subjectRegisterModel(app, reg, my, mm - 1)) : null;
   return html`<div class="app"><${WideBand} nav=${nav} noBack=${app.me.role !== 'teacher'} title="Find attendance records" sub="For requests from the circuit manager, parents or SMT" />
     <main class="wide gut content">
       <div class="row" style="flex-wrap:wrap;gap:8px"><span class="small muted">Common requests:</span>${[['lm', 'One learner, one month'], ['ls', 'One learner, one subject'], ['cm', 'Whole class, one month'], ['gr', 'Grade, date range']].filter(([k]) => !mine || k === 'lm' || k === 'ls').map(([k, v]) => html`<button class="chip" onClick=${() => preset(k)}>${v}</button>`)}</div>
@@ -886,13 +891,18 @@ function Records({ nav }) {
         </div>
         <button class="btn big" onClick=${go}><${Icon} n="search" s=${20} />Show records</button>
       </section>
+      ${out && mode === 'class' && html`<div class="chips" role="tablist" aria-label="View">${[['sum', 'Summary'], ['reg', 'View / print monthly register']].map(([k, v]) => html`<button class="chip" role="tab" aria-selected=${String(tab === k)} aria-pressed=${String(tab === k)} onClick=${() => setTab(k)}>${v}</button>`)}</div>`}
       ${out && html`<section class="card">
         ${out.sum && html`<div class="between"><div><b style="font-size:18px">${out.sum.name}</b><br /><span class="small muted">${out.sum.line}</span></div></div>
           <div class="kpis">${[[out.sum.pct + '%', 'attendance'], [out.sum.days, out.sum.daysLabel || 'school days'], [out.sum.a, 'absent'], [out.sum.lt, 'late']].map(([v, k]) => html`<div class="kpi" style="box-shadow:none;background:var(--surface-2)"><div class="v">${v}</div><div class="l">${k}</div></div>`)}</div>`}
+        ${regModel ? html`<div class="row" style="flex-wrap:wrap;gap:10px;align-items:end"><label class="f" for="rmo">Month<input id="rmo" type="month" class="inp" style="width:auto" value=${month} onInput=${(e) => e.target.value && setMonth(e.target.value)} /></label><span class="small muted">${cls}${reg === 'm' ? ' · Learner Attendance Register' : ' · ' + groupTitle(db.groups.find((x) => x.id === reg))} · ✓ present, A absent, L late</span></div>
+          <${PaperPreview} model=${regModel} max=${4} />
+          <div class="wrap"><button class="btn" onClick=${() => exportPdf(app, regModel)}><${Icon} n="print" s=${18} />Print / Save PDF</button><button class="btn line" onClick=${() => exportXlsx(app, regModel)}>Download Excel</button></div>`
+        : html`${out.cls && html`<div><b style="font-size:18px">${out.cls.label}</b>${out.cls.teacher && html`<br /><span class="small muted">Register teacher: ${out.cls.teacher}</span>`}</div>
+          <div class="kpis">${[[out.cls.pct + '%', 'attendance'], [out.cls.days, 'school days'], [out.cls.learners, 'learners'], [out.cls.a, 'absences'], [out.cls.lt, 'late']].map(([v, k]) => html`<div class="kpi" style="box-shadow:none;background:var(--surface-2)"><div class="v">${v}</div><div class="l">${k}</div></div>`)}</div>
+          ${out.cls.worst.length > 0 && html`<div class="stack"><span class="eyebrow">Most days absent</span>${out.cls.worst.map((r) => html`<div class="between small"><span>${cellText(r[0])}</span><b>${r[4]} absent${Number(r[5]) ? ' · ' + r[5] + ' late' : ''}</b></div>`)}</div>`}`}
         <div class="tablebox" style="max-height:60vh;overflow:auto"><table class="t"><thead><tr>${out.model.pages[0].head.map((x) => html`<th>${x}</th>`)}</tr></thead><tbody>${out.model.pages[0].body.map((r) => html`<tr>${r.map((c) => html`<td class="n">${cellText(c)}</td>`)}</tr>`)}${out.model.pages[0].body.length === 0 && html`<tr><td class="muted">No school days in this range.</td></tr>`}</tbody></table></div>
-        <${ExportBar} model=${out.model} />
-        ${mode === 'class' && reg === 'm' && html`<button class="btn line" onClick=${() => exportPdf(app, morningRegisterModel(app, cls, rmonth.getFullYear(), rmonth.getMonth()))}>Print ${cls} in register format (${MON_LONG[rmonth.getMonth()]})</button>`}
-        ${mode === 'class' && reg !== 'm' && html`<button class="btn line" onClick=${() => exportPdf(app, subjectRegisterModel(app, reg, rmonth.getFullYear(), rmonth.getMonth()))}>Print in subject register format (${MON_LONG[rmonth.getMonth()]})</button>`}
+        <${ExportBar} model=${out.model} />`}
         <span class="tiny muted">Every report says who printed it and when, and KAT keeps a log of which records were looked up.</span>
       </section>`}
     </main>${app.me.role !== 'teacher' && html`<${BottomNav} nav=${nav} cur="records" />`}</div>`;

@@ -1,6 +1,6 @@
 {
   "name": "kat",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "KAT (Keeping Attendance Today): attendance registers for Ficksburg High School",
   "scripts": { "build": "node build.js" },

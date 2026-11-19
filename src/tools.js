@@ -92,7 +92,7 @@ function morningRegisterModel(app, cls, y, m) {
       note: 'Key: ✓ present · A absent · L late · shaded = weekend or holiday · blank = not yet recorded' + (anyCover ? ' · a symbol at the bottom of a day = taken by that teacher (cover)' : '') + '. Learners ' + (i + 1) + ' to ' + Math.min(i + per, rowsAll.length) + ' of ' + rowsAll.length + '. ' + printedLine(app, school)
     });
   }
-  return { orientation: 'l', pages, name: 'Register ' + cls + ' ' + MON[m] + ' ' + y };
+  return { orientation: 'l', pages, name: 'Register ' + cls + ' ' + MON[m] + ' ' + y, crest: school.crest };
 }
 function signOff(db, c) {
   const head = ['Designation', 'Name', 'Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5'];
@@ -135,7 +135,7 @@ function subjectRegisterModel(app, gid, y, m) {
       note: 'Key: ✓ present · A absent · L late (counted as present) · dark shading = weekend or holiday · light shading = no ' + g.subject + ' lesson that day.' + (anyCover ? ' A symbol in the last row = lesson taken by that teacher (cover).' : '') + ' Lessons: ' + lessons + '. Two lessons on one day show as the lower of the two marks. ' + printedLine(app, school)
     });
   }
-  return { orientation: 'l', pages, name: g.short + ' ' + g.label + ' ' + MON[m] + ' ' + y };
+  return { orientation: 'l', pages, name: g.short + ' ' + g.label + ' ' + MON[m] + ' ' + y, crest: school.crest };
 }
 function bookListModel(app, listId) {
   const db = app.db, school = app.school, b = db.books.find((x) => x.id === listId);
@@ -186,8 +186,11 @@ function modelToPdf(model) {
   model.pages.forEach((pg, pi) => {
     if (pi > 0) doc.addPage();
     let y = 10;
+    // the school crest at the top left of every page
+    if (model.crest) { try { doc.addImage(model.crest, /^data:image\/png/.test(model.crest) ? 'PNG' : 'JPEG', 8, 4, 18, 18); } catch (e) { /* no crest */ } }
     doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
     pg.title.forEach((t) => { doc.text(t, W / 2, y, { align: 'center' }); y += 5; });
+    if (model.crest) y = Math.max(y, 24);
     doc.setFontSize(9); doc.setFont('helvetica', 'normal');
     let x = 10; pg.meta.forEach(([k, v]) => { doc.setFont('helvetica', 'bold'); doc.text(k + ':', x, y + 1); const kw = doc.getTextWidth(k + ': '); doc.setFont('helvetica', 'normal'); doc.text(v || '', x + kw, y + 1); x += kw + Math.max(doc.getTextWidth(v || '') + 10, 22); });
     y += 5;
