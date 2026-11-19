@@ -15,7 +15,7 @@ const libs = {
 // the shared school database. The publishable key is meant to be public: the database's own rules decide who may read what.
 const CLOUD = { url: 'https://jyqkvnnamcawgepqloom.supabase.co', key: 'sb_publishable_OacFCbKUrU294VpMEpt_lQ_rE5_pgSk' };
 const crest = 'data:image/jpeg;base64,' + fs.readFileSync(process.env.CREST || path.join(d, 'assets', 'crest.jpeg')).toString('base64');
-let js = ['core.js', 'tools.js', 'timetable.js', 'cloud.js', 'admin.js', 'ui.js'].map((f) => fs.readFileSync(path.join(d, 'src', f), 'utf8')).join('\n');
+let js = ['core.js', 'tools.js', 'timetable.js', 'cloud.js', 'admin.js', 'principal.js', 'ui.js'].map((f) => fs.readFileSync(path.join(d, 'src', f), 'utf8')).join('\n');
 js = js.replace("'__CREST__'", JSON.stringify(crest));
 let html = fs.readFileSync(path.join(d, 'src/index.html'), 'utf8').replace('/*STYLE*/', () => fs.readFileSync(path.join(d, 'src/style.css'), 'utf8'))
   .replace('<script>\n/*SCRIPT*/', () => '<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>\n<script>window.KAT_CLOUD = ' + JSON.stringify(CLOUD) + ';</script>\n<script>\n/*SCRIPT*/').replace('/*SCRIPT*/', () => js);

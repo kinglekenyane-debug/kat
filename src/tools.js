@@ -88,15 +88,19 @@ function morningRegisterModel(app, cls, y, m) {
       meta: [['Month', MON_LONG[m] + ' ' + y], ['Class', cls], ['Register teacher', c ? staffName(db, c.teacherId) : ''], ['Learners', String(accs.length)]],
       head, body: rowsAll.slice(i, i + per), foot: last ? (anyCover ? [totals, coverRow] : [totals]) : null,
       widths: { 0: 6, 1: 15, 2: 40, 3: 15, 4: 15, 5: 13, 6: 9 },
-      after: last ? signOff(db, c) : null,
+      after: last ? signOff(db, c, y, m) : null,
       note: 'Key: ✓ present · A absent · L late · shaded = weekend or holiday · blank = not yet recorded' + (anyCover ? ' · a symbol at the bottom of a day = taken by that teacher (cover)' : '') + '. Learners ' + (i + 1) + ' to ' + Math.min(i + per, rowsAll.length) + ' of ' + rowsAll.length + '. ' + printedLine(app, school)
     });
   }
   return { orientation: 'l', pages, name: 'Register ' + cls + ' ' + MON[m] + ' ' + y, crest: school.crest };
 }
-function signOff(db, c) {
+function signOff(db, c, y, m) {
   const head = ['Designation', 'Name', 'Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5'];
-  const body = [['Class teacher', c ? staffName(db, c.teacherId) : ''], ['SMT', ''], ['Principal', ''], ['District official', '']].map((r) => [{ t: r[0], align: 'l' }, { t: r[1], align: 'l' }, 'Signature:\nDate:', 'Signature:\nDate:', 'Signature:\nDate:', 'Signature:\nDate:', 'Signature:\nDate:']);
+  // the weeks of this month, Monday to Friday, in order: Week 1 is the first week with a weekday in the month
+  const weeks = []; if (y != null) for (let d = 1; d <= daysInMonth(y, m); d++) { const s = y + '-' + pad(m + 1) + '-' + pad(d); const w = dow(s); if (w >= 1 && w <= 5) { const ws = addDays(s, 1 - w); if (!weeks.includes(ws)) weeks.push(ws); } }
+  const blank = 'Signature:\nDate:';
+  const signedCell = (role, i) => { const x = weeks[i] && (db.signoffs || {})[role + '|' + weeks[i]]; if (!x) return blank; const p = db.staff.find((s) => s.id === x.by); return { t: 'Signed in KAT: ' + (p ? p.code || p.name : '') + '\nDate: ' + fmtDMY(x.at.slice(0, 10)), cls: 'cv' }; };
+  const body = [['Class teacher', c ? staffName(db, c.teacherId) : '', null], ['SMT', '', null], ['Principal', '', 'principal'], ['District official', '', null]].map((r) => [{ t: r[0], align: 'l' }, { t: r[1], align: 'l' }].concat([0, 1, 2, 3, 4].map((i) => (r[2] ? signedCell(r[2], i) : blank))));
   return { head, body, tall: true };
 }
 function groupDayMark(db, g, acc, d) {

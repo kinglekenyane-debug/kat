@@ -84,7 +84,7 @@ function BottomNav({ nav, cur }) {
   const items = role === 'teacher'
     ? [['home', 'Home', 'home'], ['register', 'Register', 'check'], ['incidents', 'Incidents', 'warn'], ['books', 'Books', 'book']]
     : role === 'office' ? [['office', 'Today', 'grid'], ['capture', 'SA-SAMS', 'inbox'], ['records', 'Records', 'file'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']]
-      : [['office', 'Today', 'grid'], ['records', 'Records', 'file'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']];
+      : [[staffGroup(app.me) === 'principal' ? 'principal' : 'office', 'Today', 'grid'], ['records', 'Records', 'file'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']];
   return html`<nav class="bnav" aria-label="Main"><div class=${'bnav-in ' + (role === 'teacher' ? 'col' : 'wide')}>${items.map(([r, label, ic]) => html`<button aria-current=${cur === r ? 'page' : null} onClick=${() => { if (r === 'register') { const c = app.me.registerClass; c ? nav.reset('register', { cls: c }) : nav.reset('cover'); } else nav.reset(r); }}><${Icon} n=${ic} />${label}</button>`)}</div></nav>`;
 }
 
@@ -558,10 +558,10 @@ function IncCard({ x }) {
 function Incidents({ nav }) {
   const db = app.db, me = app.me;
   const [f, setF] = useState('All');
-  const mine = db.incidents.filter((x) => x.by === me.id || (x.share && me.registerClass && db.learners[x.acc] && db.learners[x.acc].cls === me.registerClass));
+  const mine = me.role !== 'teacher' ? db.incidents : db.incidents.filter((x) => x.by === me.id || (x.share && me.registerClass && db.learners[x.acc] && db.learners[x.acc].cls === me.registerClass));
   const map = { All: null, Detentions: 'Detention', Behaviour: 'Behaviour', Merits: 'Merit' };
   const list = mine.filter((x) => !map[f] || x.type === map[f]).sort((a, b) => (b.date > a.date ? 1 : -1));
-  return html`<div class="app"><${Band} nav=${nav} noBack=${true} title="Incident log" sub="My classes and my register class" right=${html`<button class="ghost" onClick=${() => nav.go('print', { what: 'inc' })}>Print</button>`}>
+  return html`<div class="app"><${Band} nav=${nav} noBack=${me.role === 'teacher'} title="Incident log" sub=${me.role === 'teacher' ? 'My classes and my register class' : 'The whole school'} right=${html`<button class="ghost" onClick=${() => nav.go('print', { what: 'inc' })}>Print</button>`}>
       <div class="tabs" role="tablist">${Object.keys(map).map((k) => html`<button role="tab" aria-selected=${String(f === k)} onClick=${() => setF(k)}>${k}${k === 'All' ? ' · ' + mine.length : ''}</button>`)}</div><//>
     <main class="col gut content">
       <button class="btn big" onClick=${() => nav.go('incident-new')}><${Icon} n="plus" s=${20} />Log incident</button>
@@ -760,7 +760,7 @@ function Office({ nav }) {
   const regM = () => combine(db.classes.map((c) => morningRegisterModel(app, c.id, parse(date).getFullYear(), rm)), 'All registers ' + MON[rm] + ' ' + parse(date).getFullYear());
   const [regModel, setRegModel] = useState(null);
   const openTile = open && all.find((x) => x.c.id === open);
-  return html`<div class="app"><${WideBand} nav=${nav} noBack=${app.me.role !== 'teacher'} title=${'KAT · Attendance office'} sub=${fmtLong(date) + ' · Morning register'} />
+  return html`<div class="app"><${WideBand} nav=${nav} noBack=${app.me.role === 'office'} title=${'KAT · Attendance office'} sub=${fmtLong(date) + ' · Morning register'} />
     <main class="wide gut content">
       <div class="between"><label class="f" for="od" style="flex-direction:row;align-items:center;gap:10px">Day<input id="od" type="date" class="inp" style="width:auto" value=${date} onInput=${(e) => e.target.value && setDate(e.target.value)} /></label><div class="row" style="gap:8px;flex-wrap:wrap">${!isSchoolDay(s, date) && html`<span class="pill grey">${s.noSchool && s.noSchool[date] ? 'No school: ' + s.noSchool[date] : 'Not a school day'}</span>`}
         ${s.noSchool && s.noSchool[date] ? html`<button class="btn sm line" onClick=${() => { app.setNoSchool(date, null); app.toast(fmtShort(date) + ' is a school day again.'); }}>Undo no school</button>` : isSchoolDay(s, date) && html`<button class="btn sm line" onClick=${() => setNs('')}>Mark as no school day</button>`}</div></div>
@@ -1132,12 +1132,12 @@ function Timetable({ nav, mode }) {
 }
 
 /* ================= router ================= */
-const SCREENS = { home: Home, register: Register, cover: Cover, period: Period, reasons: Reasons, upload: Upload, incidents: Incidents, 'incident-new': IncidentNew, books: Books, 'book-new': BookNew, book: Book, find: Find, learner: Learner, print: PrintLists, office: Office, capture: Capture, records: Records, admin: AdminHub, schoolset: Admin, staff: Staff, learners: Learners, classes: Classes, yearend: YearEnd, settings: Settings, timetable: Timetable, missed: Missed, times: Times };
+const SCREENS = { home: Home, register: Register, cover: Cover, period: Period, reasons: Reasons, upload: Upload, incidents: Incidents, 'incident-new': IncidentNew, books: Books, 'book-new': BookNew, book: Book, find: Find, learner: Learner, print: PrintLists, office: Office, capture: Capture, records: Records, admin: AdminHub, principal: PrincipalHome, schoolset: Admin, staff: Staff, learners: Learners, classes: Classes, yearend: YearEnd, settings: Settings, timetable: Timetable, missed: Missed, times: Times };
 function Root() {
   const [, force] = useState(0);
   useEffect(() => app.subscribe(() => force((x) => x + 1)), []);
   const me = app.db && app.me;
-  const start = me ? (me.role === 'teacher' ? 'home' : 'office') : null;
+  const start = me ? (me.role === 'teacher' ? 'home' : staffGroup(me) === 'principal' ? 'principal' : 'office') : null;
   const [stack, setStack] = useState([]);
   const sig = (app.session.schoolId || '') + ':' + (app.session.userId || '');
   const lastSig = useRef(sig);

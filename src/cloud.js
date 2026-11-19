@@ -3,7 +3,7 @@
    Like a shared class file in the staffroom: each phone keeps its own copy to work from,
    and posts every change to the shared file as soon as there is signal. Other phones get
    the change a second later. Without signal, changes wait on the phone and go when it returns. */
-const CLOUD_MAPS = ['registers', 'reasons', 'captured', 'changes', 'learners'];
+const CLOUD_MAPS = ['registers', 'reasons', 'captured', 'changes', 'learners', 'signoffs'];
 const CLOUD_LISTS = ['staff', 'classes', 'groups', 'incidents', 'books'];
 const CLOUD_SINGLE = ['settings', 'log'];
 const CLOUD_ADMIN = ['staff', 'classes', 'settings'];

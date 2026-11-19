@@ -1,5 +1,5 @@
 /* ===== KAT core: school configuration, dates, sample data and the data store ===== */
-const TENG_VERSION = '0.7 test';
+const TENG_VERSION = '0.8 test';
 const DATA_VERSION = 7;
 
 /* ---- Schools. Each school has its own data space, name, crest and colours. ---- */
@@ -146,7 +146,9 @@ function generateSample(school, today) {
   if (ficks) {
     db.staff.find((s) => s.id === 'st1').title = 'Teacher · Grade 8 head of department';
     db.staff.push({ id: 'office1', name: 'Mrs E. Pretorius', short: 'Mrs Pretorius', title: 'Office secretary', role: 'office', registerClass: null, dhGrade: null });
-    db.staff.push({ id: 'admin1', name: 'Mr P. Mahase', short: 'Mr Mahase', title: 'Principal', role: 'admin', registerClass: null, dhGrade: null });
+    db.staff.push({ id: 'admin1', name: 'Johan Hanekom', short: 'Mr Hanekom', code: 'HJ', title: 'Principal', role: 'admin', principal: true, registerClass: null, dhGrade: null });
+    db.staff.push({ id: 'admin2', name: 'Jan-Adriaan Swanepoel', short: 'Mr Swanepoel', code: 'SJ', title: 'Deputy Principal', role: 'admin', principal: true, registerClass: null, dhGrade: null });
+    db.staff.push({ id: 'admin3', name: 'Marnel Pelser', short: 'Marnel Pelser', code: 'PM', title: 'Deputy Principal', role: 'admin', principal: true, registerClass: null, dhGrade: null });
   } else {
     db.staff[0].dhGrade = 8; db.staff[0].title = 'Teacher · Grade 8 head of department';
     db.staff.push({ id: 'office1', name: 'Ms T. Office', short: 'Ms Office', title: 'Office secretary', role: 'office', registerClass: null, dhGrade: null });
@@ -387,6 +389,9 @@ class Store {
 
   // registers
   getRegister(kind, ref, date, period) { return this.db.registers[regKey(kind, ref, date, period)] || null; }
+  // weekly sign-off (principal now; SMT and class teacher can follow): one record per role and week
+  signoff(role, ws) { return (this.db.signoffs || {})[role + '|' + ws] || null; }
+  signWeek(role, ws) { this.db.signoffs = this.db.signoffs || {}; this.db.signoffs[role + '|' + ws] = { role, week: ws, by: this.session.userId, at: stamp() }; this.commit(); }
   setNoSchool(date, reason) { const ns = Object.assign({}, this.db.settings.noSchool || {}); if (reason) ns[date] = reason; else delete ns[date]; this.updateSettings({ noSchool: ns }); }
   saveRegister({ kind, ref, date, period, marks, coverFor }) {
     const k = regKey(kind, ref, date, period);
