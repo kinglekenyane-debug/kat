@@ -96,6 +96,12 @@ const ROLE_GROUPS = [
   ['principal', 'Principal', 'The whole school, reports and settings', 'gear'],
   ['admin', 'Admin', 'Office: SA-SAMS capture, records and the timetable', 'inbox'],
 ];
+/* test version: each profile's password is saved separately on this phone, so switching profiles fills in the right one */
+const testPw = {
+  all() { return LS.get('kat:testpw') || {}; },
+  get(school, code) { return ((this.all()[school] || {})[String(code || '').toUpperCase()]) || ''; },
+  set(school, code, pw) { if (!code) return; const a = this.all(); const m = a[school] || {}; const k = String(code).toUpperCase(); if (pw) m[k] = pw; else delete m[k]; a[school] = m; LS.set('kat:testpw', a); },
+};
 function Welcome() {
   const [sid, setSid] = useState(app.session.schoolId || 'ficksburg');
   const [step, setStep] = useState('open'), [grp, setGrp] = useState(null), [more, setMore] = useState(false);
@@ -110,8 +116,10 @@ function Welcome() {
     return () => { live = false; clearTimeout(t); };
   }, [sym, sid]);
   const remembered = app.rememberedUsers();
-  const choose = (x) => { setWho(x); setSym(x.code || ''); setPw(''); setPw2(''); setErr(''); setTimeout(() => { const el = document.getElementById('wpw'); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.focus(); } }, 50); };
-  const finish = async (x) => { if (keep) await app.remember(x.id); else app.forget(x.id); app.signIn(sid, x.id, keep); };
+  const [filled, setFilled] = useState(false);
+  const fill = (code) => { const v = testPw.get(sid, code); setPw(v); setFilled(!!v); };
+  const choose = (x) => { setWho(x); setSym(x.code || ''); fill(x.code || ''); setPw2(''); setErr(''); setTimeout(() => { const el = document.getElementById('wpw'); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.focus(); } }, 50); };
+  const finish = async (x) => { if (keep) { await app.remember(x.id); testPw.set(sid, x.code, pw); } else { app.forget(x.id); testPw.set(sid, x.code, ''); } app.signIn(sid, x.id, keep); };
   const login = async (e) => {
     e && e.preventDefault();
     if (onCloud()) return cloudLogin();
@@ -143,7 +151,7 @@ function Welcome() {
     const sid2 = app.cloud.member.school_id, x = app.db.staff.find((y) => (y.code || '').toUpperCase() === r.code);
     if (!x) { setErr('Signed in, but ' + r.code + ' is not on the staff list. Ask the office.'); return; }
     await app.setPassword(x.id, pw);
-    if (keep) await app.remember(x.id); else app.forget(x.id);
+    if (keep) { await app.remember(x.id); testPw.set(sid2, x.code, pw); } else { app.forget(x.id); testPw.set(sid2, x.code, ''); }
     app.signIn(sid2, x.id, keep);
   };
   const cont = (x) => {
@@ -197,7 +205,7 @@ function Welcome() {
     <header class="band"><div class="col gut band-in"><div class="band-row"><button class="iconbtn back" aria-label="Back" onClick=${() => setStep('role')}><${Icon} n="back" /></button><div class="grow"><h1>Sign in · ${label}</h1><div class="sub">${s.name}</div></div><${Logo} s=${34} /></div></div></header>
     <main class="col gut content">
       <form class="card" onSubmit=${login}>
-        <label class="f" for="wsym">Your symbol<input id="wsym" class="inp" autocomplete="username" style="text-transform:uppercase" placeholder="e.g. LK" value=${sym} onInput=${(e) => { setSym(e.target.value.toUpperCase()); setWho(null); setErr(''); }} /></label>
+        <label class="f" for="wsym">Your symbol<input id="wsym" class="inp" autocomplete="username" style="text-transform:uppercase" placeholder="e.g. LK" value=${sym} onInput=${(e) => { const v = e.target.value.toUpperCase(); setSym(v); setWho(null); setErr(''); fill(v); }} /></label>
         ${x0 && html`<span class="small muted">${x0.name} · ${x0.title}</span>`}
         ${onCloud() && cst === 'invited' ? html`<div class="boxnote info"><span><strong>First time?</strong> Type the starting password the admin gave you, then choose your own. Nobody else, not even the office, can see yours.</span></div>
           <label class="f" for="wst">Starting password from the admin<input id="wst" type="password" class="inp" autocomplete="off" value=${startPw} onInput=${(e) => setStartPw(e.target.value)} /></label>
@@ -207,8 +215,9 @@ function Welcome() {
         : onCloud() && cst === 'no-school' ? html`<div class="boxnote warn"><span>${s.short || s.name} is not set up in KAT yet.</span></div>`
         : (!onCloud() && x0 && !x0.pw) ? html`<div class="boxnote info"><span><strong>First time?</strong> Choose your own password. Nobody else, not even the office, can see it.</span></div>
           <label class="f" for="wpw">New password<input id="wpw" type="password" class="inp" autocomplete="new-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>
-          <label class="f" for="wpw2">Type it again<input id="wpw2" type="password" class="inp" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /></label>` : html`<label class="f" for="wpw">Password<input id="wpw" type="password" class="inp" autocomplete="current-password" value=${pw} onInput=${(e) => setPw(e.target.value)} /></label>`}
-        <label class="check"><input type="checkbox" checked=${keep} onChange=${(e) => setKeep(e.target.checked)} /><span>Remember me on this phone<br /><span class="tiny muted">Next time KAT opens straight away, no password. Untick on a shared phone.</span></span></label>
+          <label class="f" for="wpw2">Type it again<input id="wpw2" type="password" class="inp" autocomplete="new-password" value=${pw2} onInput=${(e) => setPw2(e.target.value)} /></label>` : html`<label class="f" for="wpw">Password<input id="wpw" type="password" class="inp" autocomplete="current-password" value=${pw} onInput=${(e) => { setPw(e.target.value); setFilled(false); }} /></label>
+          ${filled && html`<span class="tiny muted">Saved password for ${sym} filled in from this phone. <button type="button" class="linkbtn" style="font-size:inherit" onClick=${() => { testPw.set(sid, sym, ''); setPw(''); setFilled(false); }}>Forget it</button></span>`}`}
+        <label class="check"><input type="checkbox" checked=${keep} onChange=${(e) => setKeep(e.target.checked)} /><span>Remember me on this phone<br /><span class="tiny muted">Next time KAT opens straight away. Each person's password is saved separately, so switching between test profiles fills in the right one. Untick on a shared phone.</span></span></label>
         ${err && html`<span class="small" role="alert" style="color:var(--abs-ink);font-weight:600">${err}</span>`}
         ${onCloud() && cst === 'unknown' && html`<span class="small muted">No one at ${s.short || s.name} has the symbol ${sym}.</span>`}
         <button class="btn big" type="submit" disabled=${busy}>${busy ? 'Signing in…' : 'Sign in'}</button>
@@ -958,7 +967,7 @@ function Admin({ nav }) {
 
 function ChangePw() {
   const [o, setO] = useState(''), [n, setN] = useState(''), [n2, setN2] = useState(''), [msg, setMsg] = useState('');
-  const go = async (e) => { e.preventDefault(); if (!(await app.checkPassword(app.me.id, o))) { setMsg('Your current password is wrong.'); return; } if (n.length < 6) { setMsg('Use at least 6 characters.'); return; } if (n !== n2) { setMsg('The new passwords are not the same.'); return; } if (app.cloud) { if (app.offline) { setMsg('Changing your password needs signal.'); return; } const er = await app.cloud.changePassword(n); if (er) { setMsg(er); return; } } await app.setPassword(app.me.id, n); setO(''); setN(''); setN2(''); setMsg(''); app.toast('Password changed.'); };
+  const go = async (e) => { e.preventDefault(); if (!(await app.checkPassword(app.me.id, o))) { setMsg('Your current password is wrong.'); return; } if (n.length < 6) { setMsg('Use at least 6 characters.'); return; } if (n !== n2) { setMsg('The new passwords are not the same.'); return; } if (app.cloud) { if (app.offline) { setMsg('Changing your password needs signal.'); return; } const er = await app.cloud.changePassword(n); if (er) { setMsg(er); return; } } await app.setPassword(app.me.id, n); if (testPw.get(app.db.schoolId, app.me.code)) testPw.set(app.db.schoolId, app.me.code, n); setO(''); setN(''); setN2(''); setMsg(''); app.toast('Password changed.'); };
   return html`<form class="card" onSubmit=${go}><span class="eyebrow">Change my password</span>
     <label class="f" for="cpo">Current password<input id="cpo" type="password" class="inp" autocomplete="current-password" value=${o} onInput=${(e) => setO(e.target.value)} /></label>
     <label class="f" for="cpn">New password<input id="cpn" type="password" class="inp" autocomplete="new-password" value=${n} onInput=${(e) => setN(e.target.value)} /></label>
