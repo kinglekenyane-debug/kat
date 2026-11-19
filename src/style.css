@@ -289,3 +289,15 @@ details summary { cursor: pointer; }
 .pcell { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
 .signin-line { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--ok-bg, #e8f5ec); border-radius: 12px; font-size: 14px; }
 .signin-card { border-left: 4px solid var(--accent); }
+
+/* 1.0 teacher home: next-up card and today's timeline */
+.nextup { border-left: 4px solid var(--accent); gap: 12px; }
+.nextup .signin-line { margin: 2px -4px -4px; }
+.donedot { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: var(--ok-bg); color: var(--ok-fg); flex: none; }
+.trow .rowbtn { gap: 12px; min-height: 60px; }
+.ttime { width: 46px; flex: none; font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums; color: var(--ink); }
+.tmain { display: flex; flex-direction: column; min-width: 0; }
+.tmain b { line-height: 1.25; }
+.trow.isnext { background: var(--info-bg); }
+.pill.now { background: var(--primary); color: #fff; }
+.trow .pill { flex: none; }

@@ -254,3 +254,19 @@ async function saveFile(filename, data) {
 const safeName = (s) => s.replace(/[^\w\- ]+/g, '').replace(/\s+/g, ' ').trim();
 async function exportPdf(app, model) { const r = await saveFile(safeName(model.name) + '.pdf', modelToPdf(model)); if (r.startsWith('error')) app.toast('Could not make the PDF: ' + r.slice(6)); }
 async function exportXlsx(app, model) { const r = await saveFile(safeName(model.name) + '.xlsx', modelToXlsx(model)); if (r.startsWith('error')) app.toast('Could not make the Excel file: ' + r.slice(6)); }
+/* "Email me": on a phone the share sheet opens with the PDF attached (pick Gmail or Outlook);
+   elsewhere the PDF is saved and a new email opens to the address in Settings, ready to attach it. */
+const myEmail = () => LS.get('kat:email:' + (app.session && app.session.userId), '') || '';
+async function emailPdf(app, model) {
+  const name = safeName(model.name) + '.pdf';
+  let file;
+  try { file = new File([modelToPdf(model)], name, { type: 'application/pdf' }); } catch (e) { app.toast('Could not make the PDF: ' + (e.message || e)); return; }
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: model.name, text: model.name + ', sent from KAT' }); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  await saveFile(name, file);
+  const to = myEmail();
+  location.href = 'mailto:' + encodeURIComponent(to) + '?subject=' + encodeURIComponent(model.name) + '&body=' + encodeURIComponent('The PDF "' + name + '" has been saved to your Downloads. Attach it to this email.');
+  app.toast(to ? 'PDF saved. Your email opens next: attach the PDF.' : 'PDF saved. Your email opens next: attach the PDF. Add your email address in Settings to fill it in for you.');
+}

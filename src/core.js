@@ -1,5 +1,5 @@
 /* ===== KAT core: school configuration, dates, sample data and the data store ===== */
-const TENG_VERSION = '0.9 test';
+const TENG_VERSION = '1.0 test';
 const DATA_VERSION = 7;
 
 /* ---- Schools. Each school has its own data space, name, crest and colours. ---- */

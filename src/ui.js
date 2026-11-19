@@ -9,7 +9,7 @@ const onCloud = () => !!(app.cloud && !app.offline);
 /* ---- icons ---- */
 const P = {
   back: 'M15 18l-6-6 6-6', chev: 'M9 18l6-6-6-6', check: 'M9 11l3 3 8-8|M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9',
-  home: 'M3 10l9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z', warn: 'M12 9v4|M12 17h.01|M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+  home: 'M3 10l9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z', mail: 'M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z|M3 6l9 7 9-7', menu: 'M4 6h16|M4 12h16|M4 18h16', clock: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z|M12 7v5l3 2', warn: 'M12 9v4|M12 17h.01|M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
   book: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20|M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z', search: 'M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z|M21 21l-4.3-4.3',
   print: 'M6 9V2h12v7|M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2|M6 14h12v8H6z', plus: 'M12 5v14|M5 12h14',
   user: 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2|M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z', swap: 'M17 3l4 4-4 4|M3 7h18|M7 21l-4-4 4-4|M21 17H3',
@@ -82,7 +82,7 @@ function LearnerPicker({ pool, value, onPick, label = 'Learner', id = 'lp' }) {
 function BottomNav({ nav, cur }) {
   const role = app.me.role;
   const items = role === 'teacher'
-    ? [['home', 'Home', 'home'], ['register', 'Register', 'check'], ['incidents', 'Incidents', 'warn'], ['books', 'Books', 'book']]
+    ? [['home', 'Home', 'home'], ['register', 'Register', 'check'], ['incidents', 'Incidents', 'warn'], ['books', 'Books', 'book'], ['settings', 'More', 'menu']]
     : role === 'office' ? [['office', 'Today', 'grid'], ['capture', 'SA-SAMS', 'inbox'], ['records', 'Records', 'file'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']]
       : [[staffGroup(app.me) === 'principal' ? 'principal' : 'office', 'Today', 'grid'], ['records', 'Records', 'file'], ['admin', 'Admin', 'gear'], ['settings', 'More', 'user']];
   return html`<nav class="bnav" aria-label="Main"><div class=${'bnav-in ' + (role === 'teacher' ? 'col' : 'wide')}>${items.map(([r, label, ic]) => html`<button aria-current=${cur === r ? 'page' : null} onClick=${() => { if (r === 'register') { const c = app.me.registerClass; c ? nav.reset('register', { cls: c }) : nav.reset('cover'); } else nav.reset(r); }}><${Icon} n=${ic} />${label}</button>`)}</div></nav>`;
@@ -231,68 +231,67 @@ function Home({ nav }) {
   const cls = me.registerClass, st = cls ? classStatus(db, cls, today) : null;
   const open = cls ? Object.keys(db.reasons).filter((k) => { const [a] = k.split('|'); return db.learners[a] && db.learners[a].cls === cls && !db.reasons[k].code; }).length : 0;
   const groups = myGroups();
-  const lessons = lessonsFor(db, me.id, today).map((l) => Object.assign({ g: db.groups.find((x) => x.id === l.gid) }, l));
+  const lessons = lessonsFor(db, me.id, today).map((l) => Object.assign({ g: db.groups.find((x) => x.id === l.gid) }, l)).filter((l) => l.g);
   const ch = app.getChange(today);
-  const [swap, setSwap] = useState(null);
-  const missed = missedFor(db, s, me.id, today, 10);
+  const [swap, setSwap] = useState(null), [allOpen, setAllOpen] = useState(false);
+  const missed = missedFor(db, s, me.id, today, 10).filter((x) => x.date !== today);
   const tday = schoolTimes(s).days[dow(today)];
   const sign = signoffDue(s, me, today);
-  const now = nowHM();
-  const todayIds = lessons.map((l) => l.gid);
-  groups.sort((a, b) => { const ia = todayIds.indexOf(a.id), ib = todayIds.indexOf(b.id); if ((ia < 0) !== (ib < 0)) return ia < 0 ? 1 : -1; if (ia >= 0) return lessons[ia].p - lessons[ib].p; return (a.grade || 0) - (b.grade || 0) || a.short.localeCompare(b.short) || a.label.localeCompare(b.label); });
+  const now = nowHM(), schoolDay = isSchoolDay(s, today);
   const hour = new Date().getHours();
   const hello = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-  let pill = html`<span class="pill red">Not taken yet</span>`, line = '';
-  if (st && st.st === 'wait') pill = html`<span class="pill wait">Saved on this phone</span>`;
-  if (st && st.st === 'in') { pill = html`<span class="pill ok">Sent ${st.rec.at.slice(11)}</span>`; line = st.a + ' absent · ' + st.l + ' late' + (st.rec.by !== me.id ? ' · marked by ' + staffName(db, st.rec.by) + ' (covering)' : ''); }
   const dh = me.dhGrade ? db.classes.filter((c) => c.grade === me.dhGrade && c.id !== cls) : [];
+  // each of today's registers, in the order of the day, with its state
+  const lessonState = (l) => { const empty = !l.g.learners.length; const done = app.getRegister('p', l.g.id, today, l.p);
+    return l.off ? 'off' : done ? (done.synced ? 'done' : 'wait') : empty ? 'nolist' : l.end && l.end <= now ? 'late' : l.start && l.start <= now ? 'now' : 'later'; };
+  const items = [];
+  if (cls && schoolDay && !ch.absent) items.push({ kind: 'm', time: tday && tday.held ? tday.start : (tday ? 'P1' : s.assembly), title: 'Register ' + cls, sub: tday && tday.held ? 'Assembly · due ' + tday.due : 'In class at P1', state: st.st === 'in' ? 'done' : st.st === 'wait' ? 'wait' : tday && tday.due && tday.due < now ? 'late' : 'now', go: () => nav.go('register', { cls }) });
+  lessons.forEach((l) => items.push({ kind: 'p', l, time: l.start, title: groupTitle(l.g), sub: pLabel(l.p, l.len) + ' · until ' + (l.end || '') + (l.moved ? ' · moved' : l.extra ? ' · extra' : ''), state: lessonState(l), go: () => (l.g.learners.length ? nav.go('period', { gid: l.g.id, p: l.p }) : nav.go('upload', { gid: l.g.id })) }));
+  // what to do next: an overdue one first, then the one on now, then the next one coming
+  const next = items.find((x) => x.state === 'late') || items.find((x) => x.state === 'now') || items.find((x) => x.state === 'later') || items.find((x) => x.state === 'nolist');
+  const doneN = items.filter((x) => x.state === 'done' || x.state === 'wait').length, dueN = items.filter((x) => x.state !== 'off').length;
+  const STATE = { done: ['ok', 'Done ✓'], wait: ['wait', 'On phone'], late: ['red', 'Take now'], now: ['now', 'Take'], later: ['grey', 'Later'], nolist: ['grey', 'Add list'], off: ['grey', 'Not held'] };
+  const signedIn = !schoolDay || ch.absent || ch.signin;
   return html`<div class="app">
     <header class="band home-band"><div class="col gut band-in">
       <div class="row"><div class="crestbox"><img src=${s.crest} alt=${s.name + ' crest'} /></div>
-        <div class="grow"><div class="row" style="gap:8px"><span style="font-size:22px;font-weight:800">KAT</span><${Logo} s=${22} /></div><div class="tiny" style="opacity:.9">${s.name}</div></div>
-        <button class="iconbtn" aria-label="Settings and switch person" onClick=${() => nav.go('settings')}><${Icon} n="user" /></button></div>
-      <div><div class="small" style="opacity:.85">${fmtLong(today)}</div><div style="font-size:23px;font-weight:700">${hello}, ${me.short}</div></div>
+        <div class="grow"><div class="small" style="opacity:.85">${fmtLong(today)}</div><div style="font-size:21px;font-weight:700;line-height:1.2">${hello}, ${me.short}</div></div>
+        <button class="iconbtn" aria-label="You and this phone" onClick=${() => nav.go('settings')}><${Icon} n="user" /></button></div>
     </div></header>
     <${NetBar} />
     <main class="col gut content home-main">
-      <${StaffSignIn} />
-      ${cls ? html`<section class="card">
-        <div class="between"><span class="eyebrow">Morning register</span>${pill}</div>
-        <div class="row" style="align-items:baseline;gap:8px"><span style="font-size:28px;font-weight:700">${cls}</span><span class="small muted">${classLearners(db, cls).length} learners · ${tday ? (tday.held ? 'Assembly ' + tday.start + ' · due by ' + tday.due : 'No assembly today: take it in class at P1') : 'Assembly ' + s.assembly}</span></div>
-        ${line && html`<span class="small muted">${line}</span>`}
-        ${!isSchoolDay(s, today) && html`<span class="small muted">Today is not a school day in the calendar. You can still try the register.</span>`}
-        <button class="btn big" onClick=${() => nav.go('register', { cls })}><${Icon} n="check" s=${20} />${st && st.rec ? 'Open register' : 'Take register'}</button>
-      </section>` : html`<section class="card"><span class="eyebrow">Morning register</span><span class="small muted">You do not have a register class. You can still cover a class for a colleague.</span></section>`}
-      ${s.noSchool && s.noSchool[today] && html`<div class="boxnote warn"><span><strong>No school today:</strong> ${s.noSchool[today]}. No registers are needed.</span></div>`}
+      ${!signedIn ? html`<${StaffSignIn} />` : html`
+      <section class="card nextup">
+        ${next ? html`<div class="between"><span class="eyebrow">${next.state === 'late' ? 'Overdue' : next.state === 'now' ? 'Now' : 'Next up'}</span>${dueN > 0 && html`<span class="tiny muted">${doneN} of ${dueN} done today</span>`}</div>
+          <div><div style="font-size:22px;font-weight:800;line-height:1.2">${next.title}</div><div class="small muted">${next.kind === 'p' ? pLabel(next.l.p, next.l.len) + ' · ' + app.bellRange(next.l.p, next.l.len) : next.sub}</div></div>
+          <button class="btn big" onClick=${next.go}><${Icon} n=${next.state === 'nolist' ? 'plus' : 'check'} s=${20} />${next.state === 'nolist' ? 'Add the class list' : next.kind === 'm' ? 'Take register' : 'Take period register'}</button>`
+        : html`<div class="row" style="gap:12px"><span class="donedot"><${Icon} n="check" s=${22} w=${3} /></span><span class="grow"><b style="font-size:18px">${!schoolDay ? 'No school today' : ch.absent ? 'You are marked absent' : dueN ? 'All registers done for today' : 'No registers today'}</b><br /><span class="small muted">${!schoolDay ? (s.noSchool && s.noSchool[today]) || 'Not a school day in the calendar.' : dueN ? doneN + ' of ' + dueN + ' sent. Nice work.' : 'Nothing on your timetable today.'}</span></span></div>`}
+        <${StaffSignIn} />
+      </section>`}
       ${(ch.absent || ch.signout) && html`<div class="boxnote warn"><span>${ch.absent ? html`<strong>You are marked absent today.</strong> Your lessons show as not held, so they need no register. The office can arrange cover for ${cls || 'your class'}.` : html`<strong>You signed out at ${ch.signout}.</strong> Lessons after that show as not held.`}</span><button class="btn sm line" style="background:var(--surface)" onClick=${() => { const c2 = Object.assign({}, ch); delete c2.absent; delete c2.signout; app.setChange(today, c2); app.toast(ch.absent ? 'You are marked present again.' : 'Sign-out undone.'); }}>Undo</button></div>`}
       ${sign && html`<button class="alertcard" style="background:var(--wait-bg);border-color:transparent;border-left-color:var(--accent)" onClick=${() => nav.go('print')}><${Icon} n="print" /><span class="grow"><b>${sign.k === 'principal' ? "Sign off last week's registers" : sign.k === 'smt' ? "Sign off this week's registers (SMT)" : 'Sign your register for this week'}</b><br /><span class="tiny muted">Due ${DOW_LONG[sign.d]} ${sign.t}. Print the month and sign the week box.</span></span><${Icon} n="chev" s=${18} /></button>`}
       ${missed.length > 0 && html`<button class="alertcard" onClick=${() => nav.go('missed')}><span class="countdot">${missed.length}</span><span class="grow"><b>Registers not taken</b><br /><span class="tiny muted">${missed.slice(0, 2).map((x) => (x.kind === 'm' ? 'Morning ' + x.cls : groupLabel(x.g) + ' ' + pLabel(x.p, x.len)) + ' · ' + (x.date === today ? 'today' : fmtShort(x.date))).join(', ')}${missed.length > 2 ? ' and more' : ''}. Tap to catch up.</span></span><${Icon} n="chev" s=${18} /></button>`}
       ${open > 0 && html`<button class="alertcard" onClick=${() => nav.go('reasons', { cls })}><span class="countdot">${open}</span><span class="grow"><b>Absences need a reason</b><br /><span class="tiny muted">Update when a learner or parent explains</span></span><${Icon} n="chev" s=${18} /></button>`}
       ${staffGroup(me) === 'smt' && html`<button class="alertcard" style="background:var(--info-bg);border-color:transparent;border-left-color:var(--primary)" onClick=${() => nav.go('office')}><${Icon} n="grid" /><span class="grow"><b>Whole school today</b><br /><span class="tiny muted">All 25 register classes, absentees and follow-ups</span></span><${Icon} n="chev" s=${18} /></button>`}
+      ${items.length > 0 && html`<section class="stack"><div class="between" style="margin:0 4px"><h2 class="h2" style="margin:0">Today</h2><button class="btn sm line" onClick=${() => setSwap({})}><${Icon} n="swap" s=${16} />Change today</button></div>
+        ${(ch.dayAs || (ch.moves || []).length || (ch.cancel || []).length || (ch.extra || []).length) ? html`<div class="boxnote info"><span>${ch.dayAs ? 'Today follows ' + DOW_LONG[ch.dayAs] + "'s timetable. " : ''}${[(ch.moves || []).length ? (ch.moves || []).length + ' moved' : '', (ch.cancel || []).length ? (ch.cancel || []).length + ' not taught' : '', (ch.extra || []).length ? (ch.extra || []).length + ' extra' : ''].filter(Boolean).join(', ')}${(ch.moves || []).length + (ch.cancel || []).length + (ch.extra || []).length ? ' today.' : ''}</span></div>` : null}
+        <div class="card flat">${items.map((x) => { const [pc, pt] = STATE[x.state]; return html`<div class=${'list-row trow' + (x.state === 'late' ? ' missed' : '') + (x === next ? ' isnext' : '') + (x.state === 'off' ? ' offrow' : '')}>
+          <button class="rowbtn" onClick=${x.go}><span class="ttime">${x.time || ''}</span><span class="grow tmain"><b>${x.title}</b><span class="tiny muted">${x.sub}</span></span><span class=${'pill ' + pc}>${pt}</span></button>
+          ${x.kind === 'p' ? html`<button class="iconbtn" style="color:var(--muted)" aria-label=${'Swap or move ' + x.title} onClick=${() => setSwap(x.l)}><${Icon} n="swap" s=${18} /></button>` : html`<span style="width:44px;flex:none"></span>`}</div>`; })}</div></section>`}
       ${dh.length > 0 && html`<section class="card"><div class="between"><span class="eyebrow">Grade ${me.dhGrade} registers</span><span class="tiny muted">You are head of department</span></div>
         <div class="ctiles">${dh.map((c) => { const x = classStatus(db, c.id, today); return html`<button class=${'ctile ' + x.st} onClick=${() => nav.go('register', { cls: c.id, cover: x.st === 'none' })}><span class="t"><b>${c.id}</b><span class="dot"></span></span><span class="tiny">${x.st === 'none' ? 'Not taken · tap to cover' : x.st === 'wait' ? 'Saved on phone' : x.p + ' of ' + x.n + ' present'}</span></button>`; })}</div></section>`}
-      <section class="stack"><div class="between" style="margin:0 4px"><h2 class="h2" style="margin:0">Period register</h2><button class="btn sm line" onClick=${() => setSwap({})}><${Icon} n="swap" s=${16} />Change today</button></div>
-        ${(ch.dayAs || (ch.moves || []).length || (ch.cancel || []).length || (ch.extra || []).length) ? html`<div class="boxnote info"><span>${ch.dayAs ? 'Today follows ' + DOW_LONG[ch.dayAs] + "'s timetable. " : ''}${[(ch.moves || []).length ? (ch.moves || []).length + ' moved' : '', (ch.cancel || []).length ? (ch.cancel || []).length + ' not taught' : '', (ch.extra || []).length ? (ch.extra || []).length + ' extra' : ''].filter(Boolean).join(', ')}${(ch.moves || []).length + (ch.cancel || []).length + (ch.extra || []).length ? ' today.' : ''}</span></div>` : null}
-        <div class="card flat">
-          ${groups.length === 0 && html`<p class="small muted" style="margin:0;padding:14px 16px">No subject classes yet. They appear once the office uploads the school timetable.</p>`}
-          ${groups.map((g) => { const tl = lessons.filter((l) => l.gid === g.id); const empty = !g.learners.length; const nx = nextLesson(g, today); const go = (l) => (empty ? nav.go('upload', { gid: g.id }) : l ? nav.go('period', { gid: g.id, p: l.p }) : nav.go('period', { pick: true, pgid: g.id }));
-            const head = html`<span class="ptile" style=${tl.length ? 'background:var(--accent);' : ''}><small style=${tl.length ? 'color:#1A1D23' : ''}>${tl.length ? 'TODAY' : g.short.slice(0, 4)}</small><b style=${'font-size:' + (g.label.length > 2 ? 12 : 15) + 'px;' + (tl.length ? 'color:#1A1D23' : '')}>${g.label}</b></span>`;
-            const notTaken = (l) => l && !l.off && !empty && l.end && l.end <= now && !app.getRegister('p', g.id, today, l.p);
-            const sub = (l) => { const done = l && app.getRegister('p', g.id, today, l.p); return html`<span class="small muted">${l ? 'Today ' + pLabel(l.p, l.len) + ' · ' + app.bellRange(l.p, l.len) + (l.moved ? ' · moved from ' + pLabel(l.orig, l.len) : l.extra ? ' · extra lesson' : '') : nx ? 'Next: ' + nx : 'No lessons on the timetable'}${empty ? ' · class list needed' : ''}</span>${done ? html`<br /><span class="tiny" style="color:var(--ok-fg);font-weight:600">${done.synced ? 'Register done ✓' : 'Saved on phone'}</span>` : l && l.off ? html`<br /><span class="pill grey">Not held · ${l.off === 'absent' ? 'you are absent' : 'after sign-out'}</span>` : notTaken(l) ? html`<br /><span class="pill red">Not taken</span>` : null}`; };
-            const rows = tl.length ? tl : [null];
-            return rows.map((l) => html`<div class=${'list-row' + (notTaken(l) ? ' missed' : '') + (l && l.off ? ' offrow' : '')} style="padding-right:6px"><button class="rowbtn" onClick=${() => go(l)}>${head}<span class="grow"><b>${groupTitle(g)}</b><br />${sub(l)}</span><span class="go">${empty ? 'Add list' : 'Register'}</span></button>${l ? html`<button class="iconbtn" style="color:var(--muted)" aria-label=${'Swap or move ' + groupLabel(g) + ' ' + pLabel(l.p, l.len)} onClick=${() => setSwap(l)}><${Icon} n="swap" s=${19} /></button>` : html`<span style="width:44px;flex:none"></span>`}</div>`); })}
-          <button class="list-row" style="color:var(--primary-ink);font-weight:600" onClick=${() => nav.go('upload')}><${Icon} n="plus" s=${20} />Add a class from an Excel class list</button>
-          <button class="list-row" onClick=${() => nav.go('period', { pick: true })}><${Icon} n="cal" s=${20} /><span class="grow"><b>Take a register for another day</b><br /><span class="tiny muted">If you forgot one. It is marked as filled in late.</span></span><${Icon} n="chev" s=${18} /></button>
-        </div></section>
       <section class="tiles3">
-        <button class="tile" onClick=${() => nav.go('incident-new')}><${Icon} n="warn" />Log incident</button>
-        <button class="tile" onClick=${() => nav.go('books')}><${Icon} n="book" />Book lists</button>
+        <button class="tile" onClick=${() => nav.go('cover')}><${Icon} n="cover" />Cover a class</button>
         <button class="tile" onClick=${() => nav.go('find')}><${Icon} n="search" />Find learner</button>
+        <button class="tile" onClick=${() => nav.go('print')}><${Icon} n="mail" />Print or email</button>
       </section>
-      <div class="card flat">
-        <button class="list-row" onClick=${() => nav.go('cover')}><${Icon} n="cover" /><span class="grow"><b>Cover a class</b><br /><span class="tiny muted">Morning register or a lesson for an absent colleague</span></span><${Icon} n="chev" s=${18} /></button>
-        <button class="list-row" onClick=${() => nav.go('print')}><${Icon} n="print" /><span class="grow"><b>Print lists</b><br /><span class="tiny muted">Registers and book lists in the paper format</span></span><${Icon} n="chev" s=${18} /></button>
-      </div>
+      <section class="card flat">
+        <button class="list-row" aria-expanded=${String(allOpen)} onClick=${() => setAllOpen(!allOpen)}><${Icon} n="list" /><span class="grow"><b>All my classes</b><br /><span class="tiny muted">${groups.length} subject class${groups.length === 1 ? '' : 'es'}${cls ? ' · register class ' + cls : ''}</span></span><span style=${'transition:transform .2s;transform:rotate(' + (allOpen ? 90 : 0) + 'deg)'}><${Icon} n="chev" s=${18} /></span></button>
+        ${allOpen && html`${groups.map((g) => { const nx = nextLesson(g, today); return html`<button class="list-row" onClick=${() => (g.learners.length ? nav.go('period', { pick: true, pgid: g.id }) : nav.go('upload', { gid: g.id }))}><span class="ptile"><small>${g.short.slice(0, 4)}</small><b style=${'font-size:' + (g.label.length > 2 ? 12 : 15) + 'px'}>${g.label}</b></span><span class="grow"><b>${groupTitle(g)}</b><br /><span class="tiny muted">${g.learners.length ? g.learners.length + ' learners' : 'Class list needed'}${nx ? ' · next ' + nx : ''}</span></span><span class="go">${g.learners.length ? 'Open' : 'Add list'}</span></button>`; })}
+          <button class="list-row" style="color:var(--primary-ink);font-weight:600" onClick=${() => nav.go('upload')}><${Icon} n="plus" s=${20} />Add a class from an Excel class list</button>
+          <button class="list-row" onClick=${() => nav.go('period', { pick: true })}><${Icon} n="cal" s=${20} /><span class="grow"><b>Take a register for another day</b><br /><span class="tiny muted">If you forgot one. It is marked as filled in late.</span></span><${Icon} n="chev" s=${18} /></button>`}
+      </section>
+      ${!cls && html`<p class="small muted" style="margin:0 4px">You do not have a register class. You can still cover a class for a colleague.</p>`}
     </main>
     <p class="credit">Developed by KK Lekenyane</p>
     ${swap && html`<${ChangeSheet} lesson=${swap} lessons=${lessons} onClose=${() => setSwap(null)} />`}
@@ -306,7 +305,7 @@ function Register({ nav, cls, cover, date }) {
   const c = db.classes.find((x) => x.id === cls);
   const rec = app.getRegister('m', cls, day, 0);
   const [marks, setMarks] = useState(() => (rec ? Object.assign({}, rec.marks) : {}));
-  const [dirty, setDirty] = useState(false);
+  const [dirty, setDirty] = useState(false), [pickDay, setPickDay] = useState(false);
   const accs = classLearners(db, cls);
   const isCover = !!cover || (c && c.teacherId !== app.me.id);
   let a = 0, l = 0; accs.forEach((x) => { if (marks[x] === 'A') a++; if (marks[x] === 'L') l++; });
@@ -318,18 +317,18 @@ function Register({ nav, cls, cover, date }) {
   };
   const sub = fmtShort(day) + ' · Assembly' + (isCover ? ' · covering for ' + (c.teacherId ? staffName(db, c.teacherId) : 'no register teacher') : '');
   const cur = app.getRegister('m', cls, day, 0);
-  let label = 'Submit register', bg = '';
+  let label = 'Submit · ' + (accs.length - a - l) + ' present' + (a ? ', ' + a + ' absent' : '') + (l ? ', ' + l + ' late' : ''), bg = '';
   if (cur && !dirty) { label = cur.synced ? 'Sent ' + (cur.sentAt || cur.at).slice(11) + ' · tap to resend' : 'Saved on phone · tap to resend'; bg = 'ok'; }
-  else if (cur && dirty) label = 'Submit changes';
+  else if (cur && dirty) label = 'Submit changes · ' + a + ' absent' + (l ? ', ' + l + ' late' : '');
   return html`<div class="app">
-    <${Band} nav=${nav} title=${cls + ' · Morning register'} sub=${sub}>
+    <${Band} nav=${nav} title=${cls + ' · Morning register'} sub=${sub} right=${day === todayISO() && !pickDay ? html`<button class="ghost" onClick=${() => setPickDay(true)}>Other day</button>` : null}>
       <div class="stats"><div class="stat"><b>${accs.length - a - l}</b><span>Present</span></div><div class="stat"><b>${a}</b><span>Absent</span></div><div class="stat"><b>${l}</b><span>Late</span></div></div>
     <//>
     <${NetBar} />
-    <div class="col"><div class="note row" style="gap:10px"><label class="f grow" for="rd" style="flex-direction:row;align-items:center;gap:8px;font-weight:600">Day<input id="rd" type="date" class="inp" style="width:auto;min-height:38px" max=${todayISO()} value=${day} onInput=${(e) => e.target.value && e.target.value <= todayISO() && nav.replace('register', { cls, cover, date: e.target.value })} /></label>${day !== todayISO() && html`<span class="pill wait">Late entry</span>`}</div>
+    <div class="col">${day !== todayISO() || pickDay ? html`<div class="note row" style="gap:10px"><label class="f grow" for="rd" style="flex-direction:row;align-items:center;gap:8px;font-weight:600">Day<input id="rd" type="date" class="inp" style="width:auto;min-height:38px" max=${todayISO()} value=${day} onInput=${(e) => e.target.value && e.target.value <= todayISO() && nav.replace('register', { cls, cover, date: e.target.value })} /></label>${day !== todayISO() && html`<span class="pill wait">Late entry</span>`}</div>` : null}
       ${day !== todayISO() && html`<p class="note warn">You are filling in ${fmtLong(day)}. ${cur && !cur.lateEntry ? 'This register was taken on the day.' : 'The office sees that it was filled in later.'}</p>`}
       ${!isSchoolDay(s, day) && html`<p class="note warn">${s.noSchool && s.noSchool[day] ? 'No school on this day: ' + s.noSchool[day] + '.' : 'This is not a school day in the calendar.'}</p>`}
-      <p class="note">Everyone starts as present. Tap a learner once for <strong>Absent</strong>, again for <strong>Late</strong>, again to undo.</p></div>
+      <p class="note">Everyone starts as present. Tap a name once for <strong>Absent</strong>, twice for <strong>Late</strong>, three times to undo.</p></div>
     <main class="col" style="flex:1;background:var(--surface)">
       ${accs.map((x, i) => { const m = marks[x] || 'P'; const ln = db.learners[x]; return html`<button class=${'lrow ' + m} aria-label=${learnerName(ln) + ', ' + LOOK[m] + '. Tap to change.'} onClick=${() => tap(x)}><span class="no">${i + 1}</span><span class="nm"><b>${learnerName(ln)}</b><span>Acc. ${x}</span></span><span class=${'badge ' + m}>${LOOK[m]}</span></button>`; })}
     </main>
@@ -443,7 +442,7 @@ function Period({ nav, gid, p, pick: pickMode, pgid, date }) {
       ${accs.length === 0 && html`<div class="gut content"><div class="boxnote warn"><span><strong>No class list yet for ${groupTitle(g)}.</strong> Add the SA-SAMS Excel class list once and the names show here.</span></div><button class="btn big" onClick=${() => nav.go('upload', { gid: g.id })}>Add class list</button></div>`}
       ${accs.map((x, i) => { const m = marks[x] || 'P'; const ln = db.learners[x]; return html`<button class=${'lrow ' + m} aria-label=${learnerName(ln) + ', ' + LOOK[m] + '. Tap to change.'} onClick=${() => setMarks(Object.assign({}, marks, { [x]: NEXT[m] }))}><span class="no">${i + 1}</span><span class="nm"><b>${learnerName(ln)}</b><span>Acc. ${x}</span></span><span class=${'badge ' + m}>${LOOK[m]}</span></button>`; })}
     </main>
-    ${accs.length > 0 && html`<footer class="footer-bar"><div class="col gut"><button class=${'btn big block ' + (saved && !dirty ? 'ok' : '')} onClick=${submit}>${saved && !dirty ? (saved.synced ? 'Saved · tap to resend' : 'Saved on phone · tap to resend') : saved ? 'Save changes' : 'Submit period register'}</button></div></footer>`}
+    ${accs.length > 0 && html`<footer class="footer-bar"><div class="col gut"><button class=${'btn big block ' + (saved && !dirty ? 'ok' : '')} onClick=${submit}>${saved && !dirty ? (saved.synced ? 'Saved · tap to resend' : 'Saved on phone · tap to resend') : saved ? 'Save changes' : 'Submit · ' + (accs.length - a - l) + ' present' + (a ? ', ' + a + ' absent' : '') + (l ? ', ' + l + ' late' : '')}</button></div></footer>`}
   </div>`;
 }
 
@@ -706,7 +705,7 @@ function PaperPreview({ model, max = 3, full }) {
     ${model.pages.length > max && html`<p class="small muted" style="margin:0">Showing ${max} of ${model.pages.length} pages. The PDF has them all.</p>`}</div>`;
 }
 function ExportBar({ model }) {
-  return html`<div class="wrap"><button class="btn" onClick=${() => exportPdf(app, model)}><${Icon} n="print" s=${18} />Save PDF</button><button class="btn line" onClick=${() => exportXlsx(app, model)}>Download Excel</button></div>`;
+  return html`<div class="wrap"><button class="btn" onClick=${() => exportPdf(app, model)}><${Icon} n="print" s=${18} />Save PDF</button><button class="btn line" onClick=${() => exportXlsx(app, model)}>Download Excel</button><button class="btn line" onClick=${() => emailPdf(app, model)}><${Icon} n="mail" s=${18} />Email me</button></div>`;
 }
 function PrintLists({ nav, what }) {
   const db = app.db, me = app.me, t0 = todayISO();
@@ -729,13 +728,13 @@ function PrintLists({ nav, what }) {
   if (view && model) return html`<div class="app"><${Band} nav=${{ back: () => setView(false) }} title=${model.name} sub=${model.pages.length + (model.pages.length === 1 ? ' page' : ' pages') + ' · check it, then print'} />
     <main class="wide gut content"><${PaperPreview} model=${model} max=${99} full=${true} /></main>
     <footer class="footer-bar"><div class="col gut stack"><span class="tiny muted" style="text-align:center">Save the PDF, then print it from your phone or computer. It prints on A4 ${model.orientation === 'l' ? 'landscape' : 'portrait'}.</span><${ExportBar} model=${model} /></div></footer></div>`;
-  return html`<div class="app"><${Band} nav=${nav} title="Print lists" sub="Printed in the school's paper format" />
+  return html`<div class="app"><${Band} nav=${nav} title="Print or email lists" sub="In the school's paper format" />
     <main class="col gut content">
       <section class="card"><span class="eyebrow">1. What to print</span><div class="stack" role="radiogroup">${opts.map((o) => html`<button class="radio-row" role="radio" aria-checked=${String(sel === o.id)} onClick=${() => setSel(o.id)}><span class="radio-dot"></span><span class="grow"><b>${o.title}</b><br /><span class="tiny muted">${o.sub}</span></span></button>`)}</div></section>
       ${kind !== 'b' && html`<section class="card"><div class="between"><span class="eyebrow">2. Which months</span><span class="tiny muted">${months.length} selected</span></div>
         <div class="chips">${MON.map((mn, i) => html`<button class="chip" aria-pressed=${String(months.includes(i))} onClick=${() => setMonths(months.includes(i) ? (months.length > 1 ? months.filter((x) => x !== i) : months) : months.concat([i]))}>${mn}</button>`)}</div>
         <span class="small muted">Each month prints on its own page, already marked: ✓ present, A absent, L late. Weekends and holidays are shaded. Sign-off boxes stay blank for wet-ink signatures.</span></section>`}
-      ${model && html`<section class="card"><span class="eyebrow">3. View, then print</span><span class="small muted">${model.pages.length} ${model.pages.length === 1 ? 'page' : 'pages'}, already filled in. Look through it before you print.</span><button class="btn big" onClick=${() => { setView(true); window.scrollTo(0, 0); }}><${Icon} n="file" s=${20} />View list</button></section>`}
+      ${model && html`<section class="card"><span class="eyebrow">3. View, print or email</span><span class="small muted">${model.pages.length} ${model.pages.length === 1 ? 'page' : 'pages'}, already filled in. Look through it before you print.</span><button class="btn big" onClick=${() => { setView(true); window.scrollTo(0, 0); }}><${Icon} n="file" s=${20} />View list</button><button class="btn big line" onClick=${() => emailPdf(app, model)}><${Icon} n="mail" s=${20} />Email me the list</button></section>`}
     </main></div>`;
 }
 
@@ -798,7 +797,7 @@ function Office({ nav }) {
           <section class="card"><h2 style="font-size:16px">Find records</h2><p class="small muted" style="margin:0">Any learner, class or grade, by month, dates or subject. For circuit manager requests.</p><button class="btn line" onClick=${() => nav.go('records')}>Search attendance records</button></section>
           <section class="card"><h2 style="font-size:16px">Monthly registers</h2><p class="small muted" style="margin:0">The Learner Attendance Register for every class, already totalled, with the Week 1 to 5 sign-off boxes.</p>
             <label class="f" for="rm">Month<select id="rm" class="inp" value=${rm} onChange=${(e) => { setRm(Number(e.target.value)); setRegModel(null); }}>${MON_LONG.map((x, i) => html`<option value=${i}>${x}</option>`)}</select></label>
-            <button class="btn" onClick=${() => exportPdf(app, regM())}>Save all ${all.length} classes (PDF)</button><button class="btn line" onClick=${() => exportXlsx(app, regM())}>Export to Excel</button>
+            <button class="btn" onClick=${() => exportPdf(app, regM())}>Save all ${all.length} classes (PDF)</button><button class="btn line" onClick=${() => exportXlsx(app, regM())}>Export to Excel</button><button class="btn line" onClick=${() => emailPdf(app, regM())}><${Icon} n="mail" s=${18} />Email me</button>
             <button class="linkbtn" onClick=${() => setRegModel(regModel ? null : morningRegisterModel(app, db.classes[0].id, parse(date).getFullYear(), rm))}>${regModel ? 'Hide preview' : 'Preview one class'}</button>
             ${regModel && html`<${PaperPreview} model=${regModel} max=${1} />`}</section>
         </aside>
@@ -899,7 +898,7 @@ function Records({ nav }) {
           <div class="kpis">${[[out.sum.pct + '%', 'attendance'], [out.sum.days, out.sum.daysLabel || 'school days'], [out.sum.a, 'absent'], [out.sum.lt, 'late']].map(([v, k]) => html`<div class="kpi" style="box-shadow:none;background:var(--surface-2)"><div class="v">${v}</div><div class="l">${k}</div></div>`)}</div>`}
         ${regModel ? html`<div class="row" style="flex-wrap:wrap;gap:10px;align-items:end"><label class="f" for="rmo">Month<input id="rmo" type="month" class="inp" style="width:auto" value=${month} onInput=${(e) => e.target.value && setMonth(e.target.value)} /></label><span class="small muted">${cls}${reg === 'm' ? ' · Learner Attendance Register' : ' · ' + groupTitle(db.groups.find((x) => x.id === reg))} · ✓ present, A absent, L late</span></div>
           <${PaperPreview} model=${regModel} max=${4} />
-          <div class="wrap"><button class="btn" onClick=${() => exportPdf(app, regModel)}><${Icon} n="print" s=${18} />Print / Save PDF</button><button class="btn line" onClick=${() => exportXlsx(app, regModel)}>Download Excel</button></div>`
+          <div class="wrap"><button class="btn" onClick=${() => exportPdf(app, regModel)}><${Icon} n="print" s=${18} />Print / Save PDF</button><button class="btn line" onClick=${() => exportXlsx(app, regModel)}>Download Excel</button><button class="btn line" onClick=${() => emailPdf(app, regModel)}><${Icon} n="mail" s=${18} />Email me</button></div>`
         : html`${out.cls && html`<div><b style="font-size:18px">${out.cls.label}</b>${out.cls.teacher && html`<br /><span class="small muted">Register teacher: ${out.cls.teacher}</span>`}</div>
           <div class="kpis">${[[out.cls.pct + '%', 'attendance'], [out.cls.days, 'school days'], [out.cls.learners, 'learners'], [out.cls.a, 'absences'], [out.cls.lt, 'late']].map(([v, k]) => html`<div class="kpi" style="box-shadow:none;background:var(--surface-2)"><div class="v">${v}</div><div class="l">${k}</div></div>`)}</div>
           ${out.cls.worst.length > 0 && html`<div class="stack"><span class="eyebrow">Most days absent</span>${out.cls.worst.map((r) => html`<div class="between small"><span>${cellText(r[0])}</span><b>${r[4]} absent${Number(r[5]) ? ' · ' + r[5] + ' late' : ''}</b></div>`)}</div>`}`}
@@ -996,12 +995,21 @@ function Times({ nav }) {
     </main></div>`;
 }
 /* ================= settings / switch person ================= */
+function MyEmail() {
+  const k = 'kat:email:' + app.session.userId; const [v, setV] = useState(LS.get(k) || '');
+  const save = (e) => { e.preventDefault(); const x = v.trim(); if (x && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(x)) { app.toast('That does not look like an email address.'); return; } LS.set(k, x); app.toast(x ? 'Saved. "Email me" will send lists to ' + x + '.' : 'Email address removed.'); };
+  return html`<form class="card" onSubmit=${save}><span class="eyebrow">Email me the list</span>
+    <span class="small muted">Every list and register has an <b>Email me</b> button. On a phone it opens your email app with the PDF attached. Your address stays on this phone only.</span>
+    <div class="row" style="gap:8px"><input class="inp grow" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" aria-label="Your email address" value=${v} onInput=${(e) => setV(e.target.value)} /><button class="btn" type="submit">Save</button></div></form>`;
+}
 function Settings({ nav }) {
   const me = app.me, n = app.pending();
-  return html`<div class="app"><${Band} nav=${nav} noBack=${me.role !== 'teacher'} title="You and this phone" sub=${app.school.name} />
+  return html`<div class="app"><${Band} nav=${nav} noBack=${true} title="You and this phone" sub=${app.school.name} />
     <main class="col gut content">
       <section class="card"><div class="row"><span class="avatar">${initials(me.name)}</span><span class="grow"><b>${me.name}</b><br /><span class="small muted">${me.code ? 'Symbol ' + me.code + ' · ' : ''}${me.title}${me.registerClass ? ' · register class ' + me.registerClass : ''}</span></span></div>
         <button class="btn line" onClick=${() => { app.signOut(); }}><${Icon} n="swap" s=${18} />Sign out</button>${app.isRemembered(me.id) && html`<button class="linkbtn" onClick=${() => { app.forget(me.id); if (app.cloud) app.cloud.signOut(); app.signOut(); }}>Sign out and forget me on this phone</button>`}</section>
+      ${me.role === 'teacher' && html`<section class="card flat"><button class="list-row" onClick=${() => nav.go('cover')}><${Icon} n="cover" /><span class="grow"><b>Cover a class</b></span><${Icon} n="chev" s=${18} /></button><button class="list-row" onClick=${() => nav.go('print')}><${Icon} n="mail" /><span class="grow"><b>Print or email lists</b></span><${Icon} n="chev" s=${18} /></button><button class="list-row" onClick=${() => nav.go('records')}><${Icon} n="search" /><span class="grow"><b>Find attendance records</b></span><${Icon} n="chev" s=${18} /></button><button class="list-row" onClick=${() => nav.go('reasons', {})}><${Icon} n="list" /><span class="grow"><b>Absence reasons for my class</b></span><${Icon} n="chev" s=${18} /></button></section>`}
+      <${MyEmail} />
       <${ChangePw} />
       ${app.cloud && html`<section class="card"><span class="eyebrow">Shared with the school</span>
         <span class="small">${app.cloud.ready ? 'Connected. Registers go to the school database and other phones see them within seconds.' : app.cloud.user ? 'Connecting to the school database…' : 'Not connected. Sign out and sign in again with signal to connect.'}</span>
@@ -1010,10 +1018,9 @@ function Settings({ nav }) {
       <section class="card"><span class="eyebrow">Signal</span>
         <label class="check"><input type="checkbox" checked=${app.fakeOffline} onChange=${(e) => app.setFakeOffline(e.target.checked)} /><span>Pretend there is no signal<br /><span class="small muted">For testing. Take a register, see it wait on the phone, then switch this off and watch it send.</span></span></label>
         <span class="small">${app.offline ? 'No signal right now.' : 'Online.'} ${n ? n + (n === 1 ? ' register is' : ' registers are') + ' waiting to send.' : 'Nothing waiting to send.'}</span></section>
-      ${me.role === 'teacher' && html`<section class="card flat"><button class="list-row" onClick=${() => nav.go('records')}><${Icon} n="search" /><span class="grow"><b>Find attendance records</b></span><${Icon} n="chev" s=${18} /></button><button class="list-row" onClick=${() => nav.go('reasons', {})}><${Icon} n="list" /><span class="grow"><b>Absence reasons for my class</b></span><${Icon} n="chev" s=${18} /></button></section>`}
       ${me.role !== 'teacher' && html`<section class="card flat"><button class="list-row" onClick=${() => nav.go('times')}><${Icon} n="cal" /><span class="grow"><b>Assembly and sign-off times</b><br /><span class="tiny muted">Set by the office</span></span><${Icon} n="chev" s=${18} /></button><button class="list-row" onClick=${() => nav.go('books')}><${Icon} n="book" /><span class="grow"><b>All book lists</b></span><${Icon} n="chev" s=${18} /></button><button class="list-row" onClick=${() => nav.go('find')}><${Icon} n="search" /><span class="grow"><b>Find a learner</b></span><${Icon} n="chev" s=${18} /></button></section>`}
       <section class="card"><div class="row"><${Logo} s=${44} /><span class="grow"><b>KAT ${TENG_VERSION}</b><br /><span class="small muted">Keeping Attendance Today. Test version with made-up learners.</span></span></div></section>
-    </main><p class="credit">Developed by KK Lekenyane</p>${me.role !== 'teacher' && html`<${BottomNav} nav=${nav} cur="settings" />`}</div>`;
+    </main><p class="credit">Developed by KK Lekenyane</p><${BottomNav} nav=${nav} cur="settings" /></div>`;
 }
 
 /* ================= change today's lessons (swap, move, cancel, extra, day swap) ================= */

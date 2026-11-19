@@ -154,6 +154,6 @@ function StaffRegister({ nav }) {
       <section class="card"><span class="eyebrow">Monthly staff register</span>
         <label class="f" for="srm" style="flex-direction:row;align-items:center;gap:10px">Month<input id="srm" type="month" class="inp" style="width:auto" value=${month} onInput=${(e) => e.target.value && setMonth(e.target.value)} /></label>
         <${PaperPreview} model=${model} max=${1} />
-        <div class="wrap"><button class="btn" onClick=${() => exportPdf(app, model)}><${Icon} n="print" s=${18} />Print / Save PDF</button><button class="btn line" onClick=${() => exportXlsx(app, model)}>Download Excel</button></div></section>
+        <div class="wrap"><button class="btn" onClick=${() => exportPdf(app, model)}><${Icon} n="print" s=${18} />Print / Save PDF</button><button class="btn line" onClick=${() => exportXlsx(app, model)}>Download Excel</button><button class="btn line" onClick=${() => emailPdf(app, model)}><${Icon} n="mail" s=${18} />Email me</button></div></section>
     </main></div>`;
 }
