@@ -844,7 +844,7 @@ function Records({ nav }) {
   const mine = myLearnerSet(db, app.me);
   const [mode, setMode] = useState('learner'), [acc, setAcc] = useState(null), [cls, setCls] = useState(db.classes[0].id), [grade, setGrade] = useState(String(s.grades[0]));
   const [reg, setReg] = useState('m'), [from, setFrom] = useState(mStart), [to, setTo] = useState(t0), [run, setRun] = useState(false);
-  const [tab, setTab] = useState('sum'), [month, setMonth] = useState(t0.slice(0, 7));
+  const [tab, setTab] = useState('reg'), [month, setMonth] = useState(t0.slice(0, 7));
   const preset = (p) => { setRun(false); if (p === 'lm') { setMode('learner'); setReg('m'); setFrom(mStart); setTo(t0); } if (p === 'ls') { setMode('learner'); setReg((groupsFor[0] || {}).id || 'm'); } if (p === 'cm') { setMode('class'); setReg('m'); setFrom(mStart); setTo(t0); } if (p === 'gr') { setMode('grade'); setReg('m'); setFrom(addDays(t0, -14)); setTo(t0); } };
   const days = schoolDays(s, from, to).filter((d) => d <= t0);
   const groupsFor = (mode === 'learner' && acc ? db.groups.filter((g) => g.learners.includes(acc)) : db.groups).filter((g) => !mine || g.teacherId === app.me.id);
@@ -874,7 +874,7 @@ function Records({ nav }) {
         model: tableModel(app, (label + ' · ' + (g ? groupTitle(g) : 'Morning register')).toUpperCase(), [['From', fmtDMY(from)], ['To', fmtDMY(to)], ['School days', String(days.length)], ['Learners', String(rows.length)]], ['Learner', 'Acc No', 'Class', 'Present', 'Absent', 'Late', 'Attendance'], rows, 'p') };
     }
   }
-  const go = () => { if (mode === 'learner' && !acc) { app.toast('Choose a learner first.'); return; } setRun(true); setTab('sum'); setMonth(from.slice(0, 7)); app.logLookup('Records: ' + mode + ' ' + (acc || cls || grade) + ' ' + reg + ' ' + from + ' to ' + to); };
+  const go = () => { if (mode === 'learner' && !acc) { app.toast('Choose a learner first.'); return; } setRun(true); setTab('reg'); setMonth(from.slice(0, 7)); app.logLookup('Records: ' + mode + ' ' + (acc || cls || grade) + ' ' + reg + ' ' + from + ' to ' + to); };
   const [my, mm] = month.split('-').map(Number);
   const regModel = out && mode === 'class' && tab === 'reg' ? (reg === 'm' ? morningRegisterModel(app, cls, my, mm - 1) : subjectRegisterModel(app, reg, my, mm - 1)) : null;
   return html`<div class="app"><${WideBand} nav=${nav} noBack=${app.me.role !== 'teacher'} title="Find attendance records" sub="For requests from the circuit manager, parents or SMT" />
@@ -892,7 +892,7 @@ function Records({ nav }) {
         </div>
         <button class="btn big" onClick=${go}><${Icon} n="search" s=${20} />Show records</button>
       </section>
-      ${out && mode === 'class' && html`<div class="chips" role="tablist" aria-label="View">${[['sum', 'Summary'], ['reg', 'View / print monthly register']].map(([k, v]) => html`<button class="chip" role="tab" aria-selected=${String(tab === k)} aria-pressed=${String(tab === k)} onClick=${() => setTab(k)}>${v}</button>`)}</div>`}
+      ${out && mode === 'class' && html`<div class="chips" role="tablist" aria-label="View">${[['reg', 'View / print monthly register'], ['sum', 'Summary']].map(([k, v]) => html`<button class="chip" role="tab" aria-selected=${String(tab === k)} aria-pressed=${String(tab === k)} onClick=${() => setTab(k)}>${v}</button>`)}</div>`}
       ${out && html`<section class="card">
         ${out.sum && html`<div class="between"><div><b style="font-size:18px">${out.sum.name}</b><br /><span class="small muted">${out.sum.line}</span></div></div>
           <div class="kpis">${[[out.sum.pct + '%', 'attendance'], [out.sum.days, out.sum.daysLabel || 'school days'], [out.sum.a, 'absent'], [out.sum.lt, 'late']].map(([v, k]) => html`<div class="kpi" style="box-shadow:none;background:var(--surface-2)"><div class="v">${v}</div><div class="l">${k}</div></div>`)}</div>`}
